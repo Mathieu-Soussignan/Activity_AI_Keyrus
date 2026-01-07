@@ -16,6 +16,7 @@ type ActivityType =
   | "Week-end";
 
 type Row = {
+  id: string;
   day: string;
   sujet: string;
   projet: string;
@@ -34,6 +35,10 @@ type MonthDayItem = {
   totalHours: number;
   linesCount: number;
 };
+
+function uid() {
+  return crypto.randomUUID();
+}
 
 const day = ref<string>(new Date().toISOString().slice(0, 10));
 const text = ref<string>("");
@@ -61,8 +66,12 @@ const monthTitle = computed(() => {
   return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 });
 
-const filledDaysCount = computed(() => monthDays.value.filter((d) => d.status === "filled").length);
-const missingDaysCount = computed(() => monthDays.value.filter((d) => d.status === "empty").length);
+const filledDaysCount = computed(() =>
+  monthDays.value.filter((d) => d.status === "filled").length
+);
+const missingDaysCount = computed(() =>
+  monthDays.value.filter((d) => d.status === "empty").length
+);
 const monthTotalHours = computed(() =>
   monthDays.value.reduce((acc, d) => acc + (Number(d.totalHours) || 0), 0).toFixed(1)
 );
@@ -102,6 +111,7 @@ function isWeekendDate(date: Date) {
 // --------------------
 function newEmptyRow(): Row {
   return {
+    id: uid(),
     day: day.value,
     sujet: "",
     projet: "",
@@ -123,6 +133,7 @@ function duplicateRow(index: number) {
 
   rows.value.splice(index + 1, 0, {
     ...r,
+    id: uid(),
     day: day.value,
   });
 }
@@ -130,7 +141,6 @@ function duplicateRow(index: number) {
 function removeRow(index: number) {
   msg.value = "";
   rows.value.splice(index, 1);
-  // option UX : si plus de lignes, on considère le jour "vide" (mais brouillon possible)
 }
 
 // Sync day sur toutes les lignes si l'utilisateur change le jour
@@ -159,17 +169,17 @@ async function loadProjects() {
 }
 
 // ---- API parsing helpers (robustes)
-function coerceRows(payload: any): Row[] {
-  if (payload?.rows && Array.isArray(payload.rows)) return payload.rows as Row[];
-  if (payload?.activities && Array.isArray(payload.activities)) return payload.activities as Row[];
-  if (Array.isArray(payload)) return payload as Row[];
+function coerceRows(payload: any): any[] {
+  if (payload?.rows && Array.isArray(payload.rows)) return payload.rows;
+  if (payload?.activities && Array.isArray(payload.activities)) return payload.activities;
+  if (Array.isArray(payload)) return payload;
   return [];
 }
 
-function buildMonthDaysFromActivities(year: number, month: number, activities: Row[]) {
+function buildMonthDaysFromActivities(year: number, month: number, activities: any[]) {
   const daysCount = getDaysInMonth(year, month);
 
-  const byDay = new Map<string, Row[]>();
+  const byDay = new Map<string, any[]>();
   for (const a of activities) {
     if (!a?.day) continue;
     if (!byDay.has(a.day)) byDay.set(a.day, []);
@@ -269,7 +279,17 @@ async function loadDayFromApi(targetDay: string) {
   msg.value = "";
   try {
     const { data } = await api.get("/api/activities/day", { params: { day: targetDay } });
-    rows.value = coerceRows(data);
+
+    rows.value = coerceRows(data).map((r: any) => ({
+      id: uid(),
+      day: targetDay,
+      sujet: r.sujet ?? "",
+      projet: r.projet ?? "",
+      temps_passe_h: Number(r.temps_passe_h ?? 0),
+      type: (r.type ?? "Ticket Non défini") as ActivityType,
+      impute: r.impute ?? "",
+    }));
+
     text.value = "";
     lastSavedSnapshot.value = snapshotCurrent();
   } catch (e: any) {
@@ -277,19 +297,53 @@ async function loadDayFromApi(targetDay: string) {
   }
 }
 
+function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_h" | "type">) {
+  return [
+    (r.sujet ?? "").trim().toLowerCase(),
+    (r.projet ?? "").trim().toLowerCase(),
+    String(Number(r.temps_passe_h ?? 0)),
+    r.type,
+  ].join("|");
+}
+
 async function parseAi() {
   msg.value = "";
   loadingAi.value = true;
   try {
+    const existing = structuredClone(rows.value);
+
     const { data } = await api.post("/api/ai/parse", {
       day: day.value,
       text: text.value,
       knownProjects: projects.value,
     });
 
-    rows.value = (data?.rows ?? []) as Row[];
-    // on force le jour courant par sécurité
-    rows.value = rows.value.map((r) => ({ ...r, day: day.value }));
+    const generatedRaw = (data?.rows ?? []) as any[];
+
+    const generated: Row[] = generatedRaw.map((r) => ({
+      id: uid(),
+      day: day.value,
+      sujet: r.sujet ?? "",
+      projet: r.projet ?? "",
+      temps_passe_h: Number(r.temps_passe_h ?? 0),
+      type: (r.type ?? "Ticket Non défini") as ActivityType,
+      impute: r.impute ?? "",
+    }));
+
+    // ✅ Dédup simple (évite les doubles si on regénère)
+    const seen = new Set(existing.map((r) => rowFingerprint(r)));
+    const toAdd = generated.filter((r) => {
+      const fp = rowFingerprint(r);
+      if (seen.has(fp)) return false;
+      seen.add(fp);
+      return true;
+    });
+
+    rows.value = [...existing, ...toAdd];
+
+    if (toAdd.length === 0) {
+      msg.value = "ℹ️ L’IA n’a rien ajouté (doublons).";
+    }
   } catch (e: any) {
     msg.value = e?.response?.data?.error || e?.message || "Erreur IA";
   } finally {
@@ -303,7 +357,7 @@ async function saveDay() {
   try {
     const { data } = await api.post("/api/activities/upsertDay", {
       day: day.value,
-      rows: rows.value,
+      rows: rows.value.map(({ id, ...rest }) => rest), // ✅ remove UI-only id
     });
 
     msg.value = `✅ Sauvegardé (${data?.inserted ?? 0} lignes)`;
@@ -346,7 +400,8 @@ async function logout() {
 const canExport = computed(() => {
   const selected = new Date(day.value);
   const now = new Date();
-  const isCurrent = selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
+  const isCurrent =
+    selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
   return !isCurrent;
 });
 
@@ -389,8 +444,6 @@ watch(
   async (newDay, oldDay) => {
     if (!oldDay) return;
 
-    // si c'est selectDayFromMonthPanel qui vient de le faire, oldDay existe quand même,
-    // mais on garde la règle anti-perte.
     if (isDirty.value) {
       const ok = window.confirm(
         "Tu as des modifications non sauvegardées. Changer de jour va les perdre.\n\nOK = changer quand même\nAnnuler = rester ici"
@@ -556,10 +609,7 @@ watch(
             </div>
 
             <!-- Preview -->
-            <div
-              v-if="rows.length"
-              class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4"
-            >
+            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-2">
                   <h2 class="font-semibold">Prévisualisation</h2>
@@ -572,9 +622,7 @@ watch(
                   </button>
                 </div>
 
-                <div class="text-zinc-400 text-sm">
-                  Total : {{ totalHours.toFixed(1) }}h
-                </div>
+                <div class="text-zinc-400 text-sm">Total : {{ totalHours.toFixed(1) }}h</div>
               </div>
 
               <div class="overflow-auto">
@@ -590,11 +638,7 @@ watch(
                   </thead>
 
                   <tbody>
-                    <tr
-                      v-for="(r, i) in rows"
-                      :key="i"
-                      class="border-t border-zinc-800"
-                    >
+                    <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
                       <td class="py-2 pr-2">
                         <input
                           v-model="r.sujet"

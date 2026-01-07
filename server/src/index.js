@@ -7,6 +7,12 @@ import { Mistral } from "@mistralai/mistralai";
 import { createClient } from "@supabase/supabase-js";
 
 const app = express();
+
+/**
+ * ---------------------------
+ * CORS
+ * ---------------------------
+ */
 const allowedOrigins = [
   "http://localhost:5173",
   "https://activity-ai-keyrus.vercel.app",
@@ -18,47 +24,65 @@ app.use(
       // autoriser Postman / SSR / server-to-server
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
+      if (allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
 );
+
 app.use(express.json({ limit: "1mb" }));
 
-// ---------- Clients ----------
-const mistral = new Mistral({
-  apiKey: process.env.MISTRAL_API_KEY ?? "",
-});
-
-// Admin: ONLY for auth.getUser(jwt) + admin-only tables (if any)
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL ?? "",
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? ""
-);
-
-// User-scoped client (RLS compatible): anon/publishable key + Bearer jwt
-function supabaseForJwt(jwt) {
-  return createClient(
-    process.env.SUPABASE_URL ?? "",
-    process.env.SUPABASE_ANON_KEY ?? "",
-    {
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
-      auth: { persistSession: false, autoRefreshToken: false },
-    }
-  );
+/**
+ * ---------------------------
+ * ENV sanity checks
+ * ---------------------------
+ */
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v || !String(v).trim()) {
+    console.warn(`⚠️ Missing env var: ${name}`);
+  }
+  return v ?? "";
 }
 
-// ---------- Helpers ----------
+const SUPABASE_URL = requireEnv("SUPABASE_URL");
+const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY"); // IMPORTANT: needed for user-scoped client
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY ?? "";
+const MISTRAL_MODEL = process.env.MISTRAL_MODEL || "mistral-small-latest";
+
+/**
+ * ---------------------------
+ * Clients
+ * ---------------------------
+ */
+const mistral = new Mistral({
+  apiKey: MISTRAL_API_KEY,
+});
+
+// Admin: ONLY for auth.getUser(jwt) + admin-only operations
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// User-scoped client (RLS compatible): anon key + Bearer jwt
+function supabaseForJwt(jwt) {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+/**
+ * ---------------------------
+ * Helpers
+ * ---------------------------
+ */
 async function getUserFromBearer(req) {
   const auth = req.headers.authorization || "";
   const m = auth.match(/^Bearer (.+)$/);
   if (!m) return null;
-  const jwt = m[1];
 
+  const jwt = m[1];
   const { data, error } = await supabaseAdmin.auth.getUser(jwt);
   if (error || !data?.user) return null;
 
@@ -66,7 +90,6 @@ async function getUserFromBearer(req) {
 }
 
 async function getRole(userId) {
-  // NOTE: if profiles is RLS protected, this must be readable for self.
   const { data, error } = await supabaseAdmin
     .from("profiles")
     .select("role, full_name")
@@ -78,7 +101,6 @@ async function getRole(userId) {
 }
 
 function mistralContentToText(content) {
-  // SDK can return string or array of blocks
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
@@ -88,17 +110,24 @@ function mistralContentToText(content) {
   return "";
 }
 
-// ---------- Schemas ----------
-
-// Types attendus côté Keyrus
+/**
+ * ---------------------------
+ * Activity types (ALIGN with Supabase enum)
+ * Supabase enum currently: Travail, Réunion, Support, Congés, Week-end, Autre
+ * ---------------------------
+ */
 const ActivityType = [
+  "Travail",
+  "Réunion",
+  "Support",
+  "Projet",
+  "Congés",
+  "Week-end",
+  "Autre",
   "Evol",
   "Ano",
   "Incident Applicatif",
-  "Projet",
   "Ticket Non défini",
-  "Congés",
-  "Week-end",
 ];
 
 // Normalisation robuste (accents, tirets, variantes)
@@ -108,7 +137,6 @@ function normalizeType(v) {
     .trim()
     .normalize("NFC");
 
-  // helpers : on “simplifie” pour matcher large
   const simplified = s0
     .toLowerCase()
     .normalize("NFD")
@@ -117,77 +145,108 @@ function normalizeType(v) {
     .replace(/\s+/g, " ")
     .trim();
 
-  const map = {
-    // Evol
-    evol: "Evol",
-    evolution: "Evol",
-    evo: "Evol",
+const map = {
+  // ----- Travail
+  travail: "Travail",
+  dev: "Travail",
+  developpement: "Travail",
+  developper: "Travail",
+  "dev sur": "Travail",
 
-    // Ano
-    ano: "Ano",
-    anomalie: "Ano",
-    anomalies: "Ano",
+  // ----- Réunion
+  reunion: "Réunion",
+  meeting: "Réunion",
+  daily: "Réunion",
+  point: "Réunion",
+  sync: "Réunion",
 
-    // Incident Applicatif
-    incident: "Incident Applicatif",
-    "incident applicatif": "Incident Applicatif",
-    "incident application": "Incident Applicatif",
-    "incident appli": "Incident Applicatif",
-    "incident applic": "Incident Applicatif",
+  // ----- Support (hors incident applicatif)
+  support: "Support",
+  assistance: "Support",
+  debug: "Support",
+  bug: "Support",
+  correction: "Support",
 
-    // Projet
-    projet: "Projet",
-    projets: "Projet",
-    project: "Projet",
+  // ----- Incident Applicatif
+  incident: "Incident Applicatif",
+  "incident applicatif": "Incident Applicatif",
+  "incident appli": "Incident Applicatif",
+  "incident application": "Incident Applicatif",
 
-    // Ticket Non défini
-    "ticket non defini": "Ticket Non défini",
-    "non defini": "Ticket Non défini",
-    "non défini": "Ticket Non défini",
-    "non-defini": "Ticket Non défini",
-    ticket: "Ticket Non défini",
+  // ----- Projet
+  projet: "Projet",
+  project: "Projet",
 
-    // Congés
-    conge: "Congés",
-    conges: "Congés",
-    "congés": "Congés",
-    cp: "Congés",
-    vacances: "Congés",
+  // ----- Evol (legacy)
+  evol: "Evol",
+  evolution: "Evol",
+  "evolution technique": "Evol",
+  "feature": "Evol",
 
-    // Week-end
-    weekend: "Week-end",
-    "week end": "Week-end",
-    "week-end": "Week-end",
-    we: "Week-end",
-  };
+  // ----- Ano (legacy)
+  ano: "Ano",
+  anomalie: "Ano",
+  anomalies: "Ano",
 
-  // Match direct sur original s0 si déjà clean
+  // ----- Ticket Non défini (legacy)
+  "ticket non defini": "Ticket Non défini",
+  "non defini": "Ticket Non défini",
+  ticket: "Ticket Non défini",
+
+  // ----- Congés
+  conge: "Congés",
+  conges: "Congés",
+  cp: "Congés",
+  vacances: "Congés",
+
+  // ----- Week-end
+  weekend: "Week-end",
+  "week end": "Week-end",
+  "week-end": "Week-end",
+  we: "Week-end",
+
+  // ----- Autre
+  autre: "Autre",
+  divers: "Autre",
+};
+
   if (ActivityType.includes(s0)) return s0;
-
-  // Match sur la version simplifiée
-  return map[simplified] ?? s0;
+  return map[simplified] ?? "Autre";
 }
 
-const RowSchema = z.object({
-  day: z.string().min(10), // YYYY-MM-DD
+/**
+ * ---------------------------
+ * Schemas
+ * ---------------------------
+ */
+
+// Row input coming from client (without day)
+const RowInputSchema = z.object({
   sujet: z.string().default(""),
   projet: z.string().default(""),
   temps_passe_h: z.coerce.number().min(0).max(24).default(0),
   type: z.preprocess(
     (v) => normalizeType(v),
-    z
-      .enum([
-        "Evol",
-        "Ano",
-        "Incident Applicatif",
-        "Projet",
-        "Ticket Non défini",
-        "Congés",
-        "Week-end",
-      ])
-      .default("Ticket Non défini")
+    z.enum([
+      "Travail",
+      "Réunion",
+      "Support",
+      "Projet",
+      "Congés",
+      "Week-end",
+      "Autre",
+      "Evol",
+      "Ano",
+      "Incident Applicatif",
+      "Ticket Non défini"
+    ])
   ),
   impute: z.string().default(""),
+});
+
+// Row stored/returned with day included
+const RowWithDaySchema = RowInputSchema.extend({
+  day: z.string().min(10), // YYYY-MM-DD
 });
 
 const AiParseSchema = z.object({
@@ -196,13 +255,15 @@ const AiParseSchema = z.object({
   knownProjects: z.array(z.string()).optional(),
 });
 
-// ---------- Routes ----------
+/**
+ * ---------------------------
+ * Routes
+ * ---------------------------
+ */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 /**
  * GET /api/me
- * Auth required
- * Returns basic user info + role/full_name from profiles
  */
 app.get("/api/me", async (req, res) => {
   try {
@@ -225,13 +286,21 @@ app.get("/api/me", async (req, res) => {
 
 /**
  * POST /api/ai/parse
- * Auth required (Bearer user JWT)
- * Returns rows (for that day) ready to insert into activities
+ * Auth required
+ * Returns rows for that day (no DB write here)
  */
 app.post("/api/ai/parse", async (req, res) => {
   try {
     const auth = await getUserFromBearer(req);
     if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    // If Mistral isn't configured, fail clearly (not 401/400 confusing errors)
+    if (!MISTRAL_API_KEY || !String(MISTRAL_API_KEY).trim()) {
+      return res.status(500).json({
+        error: "MISTRAL_NOT_CONFIGURED",
+        message: "MISTRAL_API_KEY is missing on the backend.",
+      });
+    }
 
     const body = AiParseSchema.parse(req.body);
     const knownProjects = body.knownProjects ?? [];
@@ -253,14 +322,14 @@ Règles:
 - Si "matin/aprem" -> tu peux faire 2+ rows (même day).
 - Types autorisés STRICTS: ${JSON.stringify(ActivityType)}
 - Si week-end ou congés -> type "Week-end" ou "Congés", temps_passe_h = 0 et sujet "Week-end"/"Congés".
-- Si type non clair -> "Ticket Non défini".
+- Si type non clair -> "Autre".
 - Projet: choisis au plus proche dans cette liste si pertinent: ${JSON.stringify(knownProjects)}
 - Si manque temps total -> mets 7h par défaut réparties (ex: 3.5 + 3.5) si plusieurs lignes, sinon 7h sur une ligne.
 - La réponse DOIT commencer par { et finir par }.
 `;
 
     const response = await mistral.chat.complete({
-      model: process.env.MISTRAL_MODEL || "mistral-small-latest",
+      model: MISTRAL_MODEL,
       temperature: 0.2,
       messages: [
         { role: "system", content: system },
@@ -284,17 +353,25 @@ Règles:
     }
 
     const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
-    const validated = rows.map((r) => RowSchema.parse({ ...r, day: body.day }));
-    res.json({ rows: validated });
+
+    // Validate + normalize + force correct day
+    const validated = rows.map((r) =>
+      RowWithDaySchema.parse({
+        ...r,
+        day: body.day,
+      })
+    );
+
+    return res.json({ rows: validated });
   } catch (e) {
-    res.status(400).json({ error: e?.message || "Bad request" });
+    return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
 /**
  * POST /api/activities/upsertDay
- * Dev: Upsert rows for current user for that day (replace existing)
- * IMPORTANT: uses user-scoped supabase client so RLS passes.
+ * Replaces the whole day (delete then insert)
+ * Auth required
  */
 app.post("/api/activities/upsertDay", async (req, res) => {
   try {
@@ -306,7 +383,7 @@ app.post("/api/activities/upsertDay", async (req, res) => {
 
     const schema = z.object({
       day: z.string().min(10),
-      rows: z.array(RowSchema),
+      rows: z.array(RowInputSchema),
     });
     const body = schema.parse(req.body);
 
@@ -319,34 +396,78 @@ app.post("/api/activities/upsertDay", async (req, res) => {
 
     if (dErr) throw new Error(dErr.message);
 
-    // Insert new
     const payload = body.rows.map((r) => ({
       user_id: user.id,
       day: body.day,
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
-      type: r.type ?? "Ticket Non défini",
+      type: r.type ?? "Autre",
       impute: r.impute ?? "",
     }));
 
-    const { data, error } = await supabaseUser.from("activities").insert(payload).select();
+    const { data, error } = await supabaseUser
+      .from("activities")
+      .insert(payload)
+      .select();
+
     if (error) throw new Error(error.message);
 
-    res.json({ ok: true, inserted: data?.length ?? 0 });
+    return res.json({ ok: true, inserted: data?.length ?? 0 });
   } catch (e) {
-    res.status(400).json({ error: e?.message || "Bad request" });
+    return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
 /**
- * POST /api/pm/activities/upsertDayForUser
- * PM only: upsert rows for a given userId & day
+ * POST /api/activities/appendDay
+ * Adds rows for a day WITHOUT deleting existing ones.
+ * (Useful if you ever want "add" semantics; typically Save should remain upsert.)
+ */
+app.post("/api/activities/appendDay", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const schema = z.object({
+      day: z.string().min(10),
+      rows: z.array(RowInputSchema),
+    });
+    const body = schema.parse(req.body);
+
+    const payload = body.rows.map((r) => ({
+      user_id: user.id,
+      day: body.day,
+      sujet: r.sujet ?? "",
+      projet: r.projet ?? "",
+      temps_passe_h: r.temps_passe_h ?? 0,
+      type: r.type ?? "Autre",
+      impute: r.impute ?? "",
+    }));
+
+    const { data, error } = await supabaseUser
+      .from("activities")
+      .insert(payload)
+      .select();
+
+    if (error) throw new Error(error.message);
+
+    return res.json({ ok: true, inserted: data?.length ?? 0 });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * PM only: upsert for another user/day
  */
 const UpsertForUserSchema = z.object({
-  userId: z.string().min(10),
+  userId: z.string().min(1),
   day: z.string().min(10),
-  rows: z.array(RowSchema),
+  rows: z.array(RowInputSchema),
 });
 
 app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
@@ -355,17 +476,13 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
     if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
     const { user, jwt } = auth;
-
-    // 1) Vérifie que c'est bien un pm (via profiles OU jwt role si tu l'as mis)
-    const prof = await getRole(user.id); // retourne role, full_name
+    const prof = await getRole(user.id);
     if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
 
     const body = UpsertForUserSchema.parse(req.body);
-
-    // 2) User-scoped client pour RLS (jwt du PM)
     const supabaseUser = supabaseForJwt(jwt);
 
-    // 3) Delete existing day rows for that dev
+    // delete existing for that user/day
     const { error: dErr } = await supabaseUser
       .from("activities")
       .delete()
@@ -374,14 +491,13 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
 
     if (dErr) throw new Error(dErr.message);
 
-    // 4) Insert new rows for that dev
     const payload = body.rows.map((r) => ({
       user_id: body.userId,
       day: body.day,
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
-      type: r.type ?? "Ticket Non défini",
+      type: r.type ?? "Autre",
       impute: r.impute ?? "",
     }));
 
@@ -400,7 +516,6 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
 
 /**
  * GET /api/projects
- * Uses user auth; reads projects list.
  */
 app.get("/api/projects", async (req, res) => {
   try {
@@ -416,15 +531,14 @@ app.get("/api/projects", async (req, res) => {
       .order("name", { ascending: true });
 
     if (error) throw new Error(error.message);
-    res.json({ projects: (data ?? []).map((x) => x.name) });
+    return res.json({ projects: (data ?? []).map((x) => x.name) });
   } catch (e) {
-    res.status(400).json({ error: e?.message || "Bad request" });
+    return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
 /**
  * GET /api/activities/day?day=YYYY-MM-DD
- * Returns rows for that day for the authenticated user.
  */
 app.get("/api/activities/day", async (req, res) => {
   try {
@@ -451,46 +565,9 @@ app.get("/api/activities/day", async (req, res) => {
   }
 });
 
-/**
- * GET /api/pm/activities/dayForUser?userId=...&day=YYYY-MM-DD
- * PM only: returns rows for a given user/day
- */
-app.get("/api/pm/activities/dayForUser", async (req, res) => {
-  try {
-    const auth = await getUserFromBearer(req);
-    if (!auth) return res.status(401).json({ error: "Unauthorized" });
-
-    const { user, jwt } = auth;
-    const prof = await getRole(user.id);
-    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
-
-    const supabaseUser = supabaseForJwt(jwt);
-
-    const q = z
-      .object({
-        userId: z.string().min(1),
-        day: z.string().min(10),
-      })
-      .parse(req.query);
-
-    const { data, error } = await supabaseUser
-      .from("activities")
-      .select("day, sujet, projet, temps_passe_h, type, impute")
-      .eq("user_id", q.userId)
-      .eq("day", q.day)
-      .order("id", { ascending: true });
-
-    if (error) throw new Error(error.message);
-
-    return res.json({ rows: data ?? [] });
-  } catch (e) {
-    return res.status(400).json({ error: e?.message || "Bad request" });
-  }
-});
-
 function startEndOfMonth(year, month1to12) {
   const start = new Date(Date.UTC(year, month1to12 - 1, 1));
-  const end = new Date(Date.UTC(year, month1to12, 0)); // last day of month
+  const end = new Date(Date.UTC(year, month1to12, 0));
   const startStr = start.toISOString().slice(0, 10);
   const endStr = end.toISOString().slice(0, 10);
   return { startStr, endStr };
@@ -498,7 +575,6 @@ function startEndOfMonth(year, month1to12) {
 
 /**
  * GET /api/activities/month?year=YYYY&month=M
- * Returns aggregated days for the authenticated user.
  */
 app.get("/api/activities/month", async (req, res) => {
   try {
@@ -517,7 +593,6 @@ app.get("/api/activities/month", async (req, res) => {
 
     const { startStr, endStr } = startEndOfMonth(q.year, q.month);
 
-    // 1️⃣ Récupérer les activités du mois
     const { data, error } = await supabaseUser
       .from("activities")
       .select("day, temps_passe_h")
@@ -527,9 +602,7 @@ app.get("/api/activities/month", async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    // 2️⃣ Agrégation par jour
-    const map = new Map(); // day -> { totalHours, linesCount }
-
+    const map = new Map();
     for (const a of data ?? []) {
       const k = a.day;
       const prev = map.get(k) ?? { totalHours: 0, linesCount: 0 };
@@ -538,16 +611,13 @@ app.get("/api/activities/month", async (req, res) => {
       map.set(k, prev);
     }
 
-    // 3️⃣ Générer TOUS les jours du mois (y compris vides)
     const daysInMonth = new Date(q.year, q.month, 0).getDate();
     const days = [];
-
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(Date.UTC(q.year, q.month - 1, d));
       const yyyyMMdd = date.toISOString().slice(0, 10);
 
       const agg = map.get(yyyyMMdd) ?? { totalHours: 0, linesCount: 0 };
-
       days.push({
         day: yyyyMMdd,
         totalHours: Math.round(agg.totalHours * 10) / 10,
@@ -555,17 +625,16 @@ app.get("/api/activities/month", async (req, res) => {
       });
     }
 
-    // 4️⃣ Réponse finale
-    return res.json({
-      year: q.year,
-      month: q.month,
-      days,
-    });
+    return res.json({ year: q.year, month: q.month, days });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
+/**
+ * GET /api/activities/export?year=YYYY&month=M
+ * CSV export
+ */
 app.get("/api/activities/export", async (req, res) => {
   try {
     const auth = await getUserFromBearer(req);
@@ -574,10 +643,12 @@ app.get("/api/activities/export", async (req, res) => {
     const { user, jwt } = auth;
     const supabaseUser = supabaseForJwt(jwt);
 
-    const q = z.object({
-      year: z.coerce.number().int().min(2000).max(2100),
-      month: z.coerce.number().int().min(1).max(12),
-    }).parse(req.query);
+    const q = z
+      .object({
+        year: z.coerce.number().int().min(2000).max(2100),
+        month: z.coerce.number().int().min(1).max(12),
+      })
+      .parse(req.query);
 
     const { startStr, endStr } = startEndOfMonth(q.year, q.month);
 
@@ -592,22 +663,31 @@ app.get("/api/activities/export", async (req, res) => {
     if (error) throw new Error(error.message);
 
     const header = "day;sujet;projet;temps_passe_h;type;impute";
-    const lines = (data ?? []).map(r =>
+    const lines = (data ?? []).map((r) =>
       [r.day, r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
-        .map(v => String(v ?? "").replaceAll(";", ","))
+        .map((v) => String(v ?? "").replaceAll(";", ","))
         .join(";")
     );
 
     const csv = [header, ...lines].join("\n");
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="activities_${q.year}-${String(q.month).padStart(2,"0")}.csv"`);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_${q.year}-${String(q.month).padStart(
+        2,
+        "0"
+      )}.csv"`
+    );
     return res.send(csv);
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
+/**
+ * Profile completion
+ */
 const CompleteProfileSchema = z.object({
   full_name: z.string().min(1),
   roleWanted: z.enum(["dev", "pm"]).default("dev"),
@@ -634,12 +714,10 @@ app.post("/api/profile/complete", async (req, res) => {
     const { user } = auth;
     const body = CompleteProfileSchema.parse(req.body);
 
-    // 1) Interdire hors keyrus.com
     if (!isKeyrusEmail(user.email)) {
       return res.status(403).json({ error: "Email non autorisé (keyrus.com requis)." });
     }
 
-    // 2) Rôle final sécurisé
     let finalRole = "dev";
     if (body.roleWanted === "pm") {
       if (!isAllowedPm(user.email)) {
@@ -648,22 +726,16 @@ app.post("/api/profile/complete", async (req, res) => {
       finalRole = "pm";
     }
 
-    // 3) Upsert profile (service role OK)
     const { error: upsertErr } = await supabaseAdmin
       .from("profiles")
-      .upsert(
-        { id: user.id, full_name: body.full_name, role: finalRole },
-        { onConflict: "id" }
-      );
+      .upsert({ id: user.id, full_name: body.full_name, role: finalRole }, { onConflict: "id" });
 
     if (upsertErr) throw new Error(upsertErr.message);
 
-    // 4) Injecter le rôle dans le JWT (app_metadata)
     const { error: metaErr } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
       app_metadata: { role: finalRole },
     });
 
-    // rollback simple si meta échoue (évite incohérences)
     if (metaErr) {
       await supabaseAdmin.from("profiles").update({ role: "dev" }).eq("id", user.id);
       throw new Error(metaErr.message);
@@ -684,19 +756,10 @@ app.get("/api/pm/completion", async (req, res) => {
     if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
     const { user, jwt } = auth;
-
     const { role } = await getRole(user.id);
     if (role !== "pm") return res.status(403).json({ error: "Forbidden" });
 
-    const q = z
-      .object({
-        from: z.string().min(10),
-        to: z.string().min(10),
-      })
-      .parse(req.query);
-
-    // For PM view, you likely want a SECURITY DEFINER RPC in production.
-    // For now, assuming your RLS allows PM to read profiles/activities.
+    const q = z.object({ from: z.string().min(10), to: z.string().min(10) }).parse(req.query);
     const supabaseUser = supabaseForJwt(jwt);
 
     const { data: profiles, error: pErr } = await supabaseUser
@@ -736,9 +799,9 @@ app.get("/api/pm/completion", async (req, res) => {
       totalHours: Math.round(st.hours * 10) / 10,
     }));
 
-    res.json({ from: q.from, to: q.to, users: result });
+    return res.json({ from: q.from, to: q.to, users: result });
   } catch (e) {
-    res.status(400).json({ error: e?.message || "Bad request" });
+    return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
