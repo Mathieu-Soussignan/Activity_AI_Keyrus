@@ -310,7 +310,7 @@ async function parseAi() {
   msg.value = "";
   loadingAi.value = true;
   try {
-    const existing = structuredClone(rows.value);
+    const existing = rows.value.map((r) => ({ ...r }));
 
     const { data } = await api.post("/api/ai/parse", {
       day: day.value,
