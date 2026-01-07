@@ -517,7 +517,7 @@ app.get("/api/activities/month", async (req, res) => {
 
     const { startStr, endStr } = startEndOfMonth(q.year, q.month);
 
-    // Fetch minimal fields for aggregation
+    // 1️⃣ Récupérer les activités du mois
     const { data, error } = await supabaseUser
       .from("activities")
       .select("day, temps_passe_h")
@@ -527,8 +527,9 @@ app.get("/api/activities/month", async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    // Aggregate by day
+    // 2️⃣ Agrégation par jour
     const map = new Map(); // day -> { totalHours, linesCount }
+
     for (const a of data ?? []) {
       const k = a.day;
       const prev = map.get(k) ?? { totalHours: 0, linesCount: 0 };
@@ -537,15 +538,29 @@ app.get("/api/activities/month", async (req, res) => {
       map.set(k, prev);
     }
 
-    const days = Array.from(map.entries())
-      .map(([day, v]) => ({
-        day,
-        totalHours: Math.round(v.totalHours * 10) / 10,
-        linesCount: v.linesCount,
-      }))
-      .sort((a, b) => a.day.localeCompare(b.day));
+    // 3️⃣ Générer TOUS les jours du mois (y compris vides)
+    const daysInMonth = new Date(q.year, q.month, 0).getDate();
+    const days = [];
 
-    return res.json({ year: q.year, month: q.month, days });
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(Date.UTC(q.year, q.month - 1, d));
+      const yyyyMMdd = date.toISOString().slice(0, 10);
+
+      const agg = map.get(yyyyMMdd) ?? { totalHours: 0, linesCount: 0 };
+
+      days.push({
+        day: yyyyMMdd,
+        totalHours: Math.round(agg.totalHours * 10) / 10,
+        linesCount: agg.linesCount,
+      });
+    }
+
+    // 4️⃣ Réponse finale
+    return res.json({
+      year: q.year,
+      month: q.month,
+      days,
+    });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
