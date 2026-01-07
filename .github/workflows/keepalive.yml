@@ -1,0 +1,14 @@
+name: Supabase Keepalive
+
+on:
+  schedule:
+    - cron: "0 8 * * 1,4" # Lundi + Jeudi à 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping keepalive endpoint
+        run: |
+          curl -fsS https://activity-ai-keyrus.onrender.com/api/keepalive

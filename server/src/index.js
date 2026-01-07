@@ -262,6 +262,21 @@ const AiParseSchema = z.object({
  */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+app.get("/api/keepalive", async (req, res) => {
+  try {
+    // micro requête DB (RLS safe via service role)
+    const { error } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+    return res.json({ ok: true, ts: new Date().toISOString() });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || "keepalive failed" });
+  }
+});
+
 /**
  * GET /api/me
  */
