@@ -28,11 +28,24 @@ function pad2(n: number) {
 function yyyyMmDd(d: Date) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
+function yyyyMmDdLocal(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 function endOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+
+// lundi (semaine locale)
+function startOfWeekMonday(d: Date) {
+  const x = new Date(d);
+  const day = x.getDay(); // 0 dim .. 6 sam
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
 
 const loading = ref(false);
@@ -63,7 +76,7 @@ async function ensurePm() {
       return false;
     }
 
-    me.value = user; // 👈 IMPORTANT
+    me.value = user;
     return true;
   } catch {
     await router.push("/activity");
@@ -79,7 +92,6 @@ async function loadCompletion() {
       params: { from: from.value, to: to.value },
     });
 
-    // On garde seulement les devs dans la liste (le CP n’a pas besoin de s’afficher)
     users.value = (data?.users ?? [])
       .filter((u: any) => (u?.role ?? "") === "dev")
       .map((u: any) => ({
@@ -102,6 +114,43 @@ function setMonth(offset: number) {
   const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
   from.value = yyyyMmDd(startOfMonth(d));
   to.value = yyyyMmDd(endOfMonth(d));
+}
+
+// n semaines = du lundi (semaine courante - n) au dimanche (semaine courante - 1)
+function setWeeksBack(n: number) {
+  const now = new Date();
+  const startThisWeek = startOfWeekMonday(now);
+
+  const start = new Date(startThisWeek);
+  start.setDate(start.getDate() - 7 * n);
+
+  const end = new Date(startThisWeek);
+  end.setDate(end.getDate() - 1);
+
+  from.value = yyyyMmDdLocal(start);
+  to.value = yyyyMmDdLocal(end);
+}
+
+async function exportRange(userId?: string) {
+  msg.value = "";
+  try {
+    const resp = await api.get("/api/pm/export-range", {
+      params: { from: from.value, to: to.value, ...(userId ? { userId } : {}) },
+      responseType: "blob",
+    });
+
+    const blob = new Blob([resp.data], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `activities_CP_${from.value}_to_${to.value}${userId ? `_user_${userId}` : ""}.csv`;
+    a.click();
+
+    window.URL.revokeObjectURL(url);
+  } catch (e: any) {
+    msg.value = e?.response?.data?.error || e?.message || "Erreur export période";
+  }
 }
 
 async function exportMonth(offset: number) {
@@ -168,12 +217,20 @@ onMounted(async () => {
         <div class="flex flex-wrap items-end gap-3">
           <div>
             <label class="text-xs text-zinc-400">Du</label>
-            <input v-model="from" type="date" class="block rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2" />
+            <input
+              v-model="from"
+              type="date"
+              class="block rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
+            />
           </div>
 
           <div>
             <label class="text-xs text-zinc-400">Au</label>
-            <input v-model="to" type="date" class="block rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2" />
+            <input
+              v-model="to"
+              type="date"
+              class="block rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
+            />
           </div>
 
           <button
@@ -190,18 +247,64 @@ onMounted(async () => {
         </div>
 
         <div class="flex flex-wrap gap-2 mt-3">
-          <button @click="setMonth(0); loadCompletion()" class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs">
+          <button
+            @click="setMonth(0); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
             Mois courant
           </button>
-          <button @click="setMonth(-1); loadCompletion()" class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs">
+          <button
+            @click="setMonth(-1); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
             Mois précédent
           </button>
 
-          <button @click="exportMonth(0)" class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs">
+          <button
+            @click="exportMonth(0)"
+            class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
+          >
             Export CP mois courant
           </button>
-          <button @click="exportMonth(-1)" class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs">
+          <button
+            @click="exportMonth(-1)"
+            class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
+          >
             Export CP mois précédent
+          </button>
+
+          <!-- ✅ NEW : export période (from/to) -->
+          <button
+            @click="exportRange()"
+            class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
+          >
+            Export CP période
+          </button>
+
+          <!-- ✅ NEW : presets 1–4 semaines (utilise from/to) -->
+          <button
+            @click="setWeeksBack(1); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            1 semaine
+          </button>
+          <button
+            @click="setWeeksBack(2); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            2 semaines
+          </button>
+          <button
+            @click="setWeeksBack(3); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            3 semaines
+          </button>
+          <button
+            @click="setWeeksBack(4); loadCompletion()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            4 semaines
           </button>
         </div>
 
@@ -215,6 +318,7 @@ onMounted(async () => {
               <th class="text-left py-2">Dev</th>
               <th class="text-right py-2">Jours remplis</th>
               <th class="text-right py-2">Heures</th>
+              <th class="text-right py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -222,6 +326,14 @@ onMounted(async () => {
               <td class="py-2">{{ u.name }}</td>
               <td class="py-2 text-right">{{ u.filledDays }}</td>
               <td class="py-2 text-right font-semibold">{{ u.totalHours.toFixed(1) }}</td>
+              <td class="py-2 text-right">
+                <button
+                  @click="exportRange(u.userId)"
+                  class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+                >
+                  Export dev
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>

@@ -537,6 +537,15 @@ onMounted(async () => {
           >
             Modifs non sauvegardées
           </div>
+          
+          <!-- 🧭 Dashboard CP (PM only) -->
+          <button
+            v-if="me?.role === 'pm'"
+            @click="router.push('/pm')"
+            class="rounded-xl bg-emerald-400 text-zinc-950 px-3 py-2 text-sm font-medium"
+          >
+            Dashboard CP
+          </button>
 
           <!-- 🚪 Logout -->
           <button

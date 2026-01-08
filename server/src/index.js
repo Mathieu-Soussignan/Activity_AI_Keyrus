@@ -835,6 +835,110 @@ app.get("/api/pm/completion", async (req, res) => {
   }
 });
 
+/*
+ * PM Dashboard: GET /api/pm/activities?userId=UUID&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * PM only: récupère les activités d'un user entre deux dates
+ */
+app.get("/api/pm/activities", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z.object({
+      userId: z.string().min(1),
+      from: z.string().min(10),
+      to: z.string().min(10),
+    }).parse(req.query);
+
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const { data, error } = await supabaseUser
+      .from("activities")
+      .select("id, user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .eq("user_id", q.userId)
+      .gte("day", q.from)
+      .lte("day", q.to)
+      .order("day", { ascending: true })
+      .order("id", { ascending: true });
+
+    if (error) throw new Error(error.message);
+    return res.json({ userId: q.userId, from: q.from, to: q.to, rows: data ?? [] });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * PM Dashboard: GET /api/pm/export-range?from=YYYY-MM-DD&to=YYYY-MM-DD&userId=UUID
+ * PM only: export CSV global (tous les users) avec full_name
+ */
+app.get("/api/pm/export-range", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z.object({
+      from: z.string().min(10),
+      to: z.string().min(10),
+      userId: z.string().optional(), // optionnel
+    }).parse(req.query);
+
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const { data: profiles, error: pErr } = await supabaseUser
+      .from("profiles")
+      .select("id, full_name, role");
+    if (pErr) throw new Error(pErr.message);
+
+    const nameById = new Map((profiles ?? []).map(p => [p.id, (p.full_name ?? "").trim() || p.id]));
+
+    let query = supabaseUser
+      .from("activities")
+      .select("user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .gte("day", q.from)
+      .lte("day", q.to)
+      .order("user_id", { ascending: true })
+      .order("day", { ascending: true });
+
+    if (q.userId) query = query.eq("user_id", q.userId);
+
+    const { data: acts, error: aErr } = await query;
+    if (aErr) throw new Error(aErr.message);
+
+    const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
+    const lines = (acts ?? []).map(r => [
+      nameById.get(r.user_id) ?? r.user_id,
+      r.user_id,
+      r.day,
+      r.sujet,
+      r.projet,
+      r.temps_passe_h,
+      r.type,
+      r.impute,
+    ].map(sanitizeCsvCell).join(";"));
+
+    const csv = [header, ...lines].join("\n");
+    const csvWithBom = "\uFEFF" + csv;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_CP_${q.from}_to_${q.to}${q.userId ? "_"+q.userId : ""}.csv"`
+    );
+    return res.send(csvWithBom);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
 /**
  * GET /api/pm/export?year=YYYY&month=M
  * PM only: export CSV global (tous les users) avec full_name
