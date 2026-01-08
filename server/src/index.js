@@ -882,25 +882,31 @@ app.get("/api/pm/export-range", async (req, res) => {
     if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
     const { user, jwt } = auth;
+
+    // check role via admin (source of truth)
     const prof = await getRole(user.id);
     if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
 
     const q = z.object({
-      from: z.string().min(10),
-      to: z.string().min(10),
-      userId: z.string().optional(), // optionnel
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      userId: z.string().optional(),
     }).parse(req.query);
 
     const supabaseUser = supabaseForJwt(jwt);
 
+    // profiles map
     const { data: profiles, error: pErr } = await supabaseUser
       .from("profiles")
       .select("id, full_name, role");
     if (pErr) throw new Error(pErr.message);
 
-    const nameById = new Map((profiles ?? []).map(p => [p.id, (p.full_name ?? "").trim() || p.id]));
+    const nameById = new Map(
+      (profiles ?? []).map((p) => [p.id, (p.full_name ?? "").trim() || p.id])
+    );
 
-    let query = supabaseUser
+    // activities range
+    let actsQ = supabaseUser
       .from("activities")
       .select("user_id, day, sujet, projet, temps_passe_h, type, impute")
       .gte("day", q.from)
@@ -908,32 +914,46 @@ app.get("/api/pm/export-range", async (req, res) => {
       .order("user_id", { ascending: true })
       .order("day", { ascending: true });
 
-    if (q.userId) query = query.eq("user_id", q.userId);
+    if (q.userId) actsQ = actsQ.eq("user_id", q.userId);
 
-    const { data: acts, error: aErr } = await query;
+    const { data: acts, error: aErr } = await actsQ;
     if (aErr) throw new Error(aErr.message);
 
+    // CSV safe cells
+    function sanitizeCsvCell(v) {
+      let s = String(v ?? "")
+        .replaceAll(";", ",")
+        .replaceAll("\n", " ")
+        .replaceAll("\r", " ");
+
+      // protège Excel injection
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return s;
+    }
+
     const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
-    const lines = (acts ?? []).map(r => [
-      nameById.get(r.user_id) ?? r.user_id,
-      r.user_id,
-      r.day,
-      r.sujet,
-      r.projet,
-      r.temps_passe_h,
-      r.type,
-      r.impute,
-    ].map(sanitizeCsvCell).join(";"));
+    const lines = (acts ?? []).map((r) => {
+      const fullName = nameById.get(r.user_id) ?? r.user_id;
+      return [
+        fullName,
+        r.user_id,
+        r.day,
+        r.sujet,
+        r.projet,
+        r.temps_passe_h,
+        r.type,
+        r.impute,
+      ].map(sanitizeCsvCell).join(";");
+    });
 
     const csv = [header, ...lines].join("\n");
-    const csvWithBom = "\uFEFF" + csv;
-
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="activities_CP_${q.from}_to_${q.to}${q.userId ? "_"+q.userId : ""}.csv"`
+      `attachment; filename="activities_CP_${q.from}_to_${q.to}${q.userId ? `_user_${q.userId}` : ""}.csv"`
     );
-    return res.send(csvWithBom);
+
+    return res.send("\uFEFF" + csv);
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
