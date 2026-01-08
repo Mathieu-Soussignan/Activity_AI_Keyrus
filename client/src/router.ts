@@ -15,7 +15,12 @@ const router = createRouter({
     { path: "/reset-password", component: ResetPassword },
     { path: "/complete-profile", component: CompleteProfile },
     { path: "/activity", component: Activity },
+
+    // PM
+    { path: "/pm", redirect: "/pm-dashboard" },
     { path: "/pm-dashboard", component: PmDashboard },
+    // fallback
+    { path: "/:pathMatch(.*)*", redirect: "/activity" },
   ],
 });
 
@@ -34,21 +39,25 @@ router.beforeEach(async (to) => {
     return "/activity";
   }
 
-  // Si connecté, on force le profil complété
   if (isAuthed && !publicRoutes.includes(to.path)) {
-    // On autorise /complete-profile (sinon boucle infinie)
     if (to.path === profileRoute) return true;
 
     try {
       const me = await api.get("/api/me");
-      const fullName = String(me?.data?.full_name ?? "").trim();
 
-      // Si pas de nom => on force la complétion
+      const fullName = String(me?.data?.full_name ?? "").trim();
+      const role = String(me?.data?.role ?? "");
+
+      // force completion profil
       if (!fullName) {
         return profileRoute;
       }
+
+      // routes PM uniquement
+      if (to.path === "/pm" || to.path === "/pm-dashboard") {
+        if (role !== "pm") return "/activity";
+      }
     } catch {
-      // Si /api/me fail alors que session existe, on repart login
       return "/login";
     }
   }
