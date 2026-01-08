@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { supabase } from "../lib/supabase";
+import { ensureMe, clearMeCache, type Me} from "../lib/me";
 import { api } from "../lib/api";
 import { useRouter } from "vue-router";
 
@@ -48,6 +49,19 @@ const loadingAi = ref<boolean>(false);
 const saving = ref<boolean>(false);
 const msg = ref<string>("");
 const logoutLoading = ref<boolean>(false);
+const me = ref<Me | null>(null);
+
+const meLabel = computed(() => {
+  if (!me.value) return "";
+  return (me.value.full_name?.trim() || me.value.email || "").trim();
+});
+
+const meRoleLabel = computed(() => {
+  const r = me.value?.role;
+  if (r === "pm") return "CP";
+  if (r === "dev") return "Dev";
+  return "";
+});
 
 // ---- Month panel state
 const monthDays = ref<MonthDayItem[]>([]);
@@ -56,6 +70,44 @@ const monthError = ref<string>("");
 
 // Anti-perte
 const lastSavedSnapshot = ref<string>("");
+
+// ---- Day change controller (anti double confirm / anti faux dirty)
+const changingDay = ref(false);
+let lastDayBeforeInput = day.value;
+
+function onDayInputFocus() {
+  lastDayBeforeInput = day.value;
+}
+
+async function onDayInputChange(e: Event) {
+  const wanted = (e.target as HTMLInputElement)?.value;
+  if (!wanted || wanted === lastDayBeforeInput) return;
+
+  // v-model a déjà changé day, on revient en arrière pour passer par changeDay()
+  day.value = lastDayBeforeInput;
+  await changeDay(wanted);
+}
+
+async function changeDay(targetDay: string, opts?: { force?: boolean }) {
+  if (!targetDay || targetDay === day.value) return;
+  if (changingDay.value) return;
+
+  if (!opts?.force && isDirty.value) {
+    const ok = window.confirm(
+      "Tu as des modifications non sauvegardées. Changer de jour va les perdre.\n\nOK = changer quand même\nAnnuler = rester ici"
+    );
+    if (!ok) return;
+  }
+
+  changingDay.value = true;
+  try {
+    day.value = targetDay;
+    await loadDayFromApi(targetDay);
+    await loadMonth();
+  } finally {
+    changingDay.value = false;
+  }
+}
 
 // --------------------
 // Temps par tranches (Whoz-like)
@@ -102,7 +154,7 @@ function snapshotCurrent() {
   return JSON.stringify({
     day: day.value,
     text: text.value,
-    rows: rows.value,
+    rows: rows.value.map(({ id, ...rest }) => rest), // ignore UI-only id
   });
 }
 
@@ -169,14 +221,6 @@ function removeRow(index: number) {
   msg.value = "";
   rows.value.splice(index, 1);
 }
-
-// Sync day sur toutes les lignes si l'utilisateur change le jour
-watch(
-  () => day.value,
-  (d) => {
-    rows.value = rows.value.map((r) => ({ ...r, day: d }));
-  }
-);
 
 async function ensureAuthedOrRedirect() {
   const { data } = await supabase.auth.getSession();
@@ -401,18 +445,7 @@ async function saveDay() {
 }
 
 async function selectDayFromMonthPanel(targetDay: string) {
-  if (targetDay === day.value) return;
-
-  if (isDirty.value) {
-    const ok = window.confirm(
-      "Tu as des modifications non sauvegardées. Changer de jour va les perdre.\n\nOK = changer quand même\nAnnuler = rester ici"
-    );
-    if (!ok) return;
-  }
-
-  day.value = targetDay;
-  await loadDayFromApi(targetDay);
-  await loadMonth();
+  await changeDay(targetDay);
 }
 
 async function logout() {
@@ -420,6 +453,7 @@ async function logout() {
   logoutLoading.value = true;
   try {
     await supabase.auth.signOut();
+    clearMeCache();
     await router.push("/login");
   } finally {
     logoutLoading.value = false;
@@ -461,31 +495,18 @@ async function exportExcel() {
 
 onMounted(async () => {
   await ensureAuthedOrRedirect();
+
+    // charge le profil (cached)
+  try {
+    me.value = await ensureMe();
+  } catch {
+    // si /api/me plante, on laisse vide (pas bloquant)
+    me.value = null;
+  }
   await loadProjects();
   await loadMonth();
   await loadDayFromApi(day.value);
 });
-
-// Garde-fou si l’utilisateur change la date via l’input date
-watch(
-  () => day.value,
-  async (newDay, oldDay) => {
-    if (!oldDay) return;
-
-    if (isDirty.value) {
-      const ok = window.confirm(
-        "Tu as des modifications non sauvegardées. Changer de jour va les perdre.\n\nOK = changer quand même\nAnnuler = rester ici"
-      );
-      if (!ok) {
-        day.value = oldDay;
-        return;
-      }
-    }
-
-    await loadDayFromApi(newDay);
-    await loadMonth();
-  }
-);
 </script>
 
 <template>
@@ -499,6 +520,17 @@ watch(
         </div>
 
         <div class="flex items-center gap-4">
+          <!-- 👤 Utilisateur connecté -->
+          <div v-if="me" class="text-right leading-tight">
+            <div class="text-sm font-semibold">
+              {{ meLabel }}
+            </div>
+            <div class="text-xs text-zinc-400">
+              {{ meRoleLabel }}
+            </div>
+          </div>
+
+          <!-- ⚠️ Modifs non sauvegardées -->
           <div
             v-if="isDirty"
             class="text-xs text-amber-300/90 border border-amber-700/40 px-2 py-1 rounded-lg"
@@ -506,6 +538,7 @@ watch(
             Modifs non sauvegardées
           </div>
 
+          <!-- 🚪 Logout -->
           <button
             @click="logout"
             :disabled="logoutLoading"
@@ -515,6 +548,7 @@ watch(
           </button>
         </div>
       </header>
+
 
       <!-- Layout -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -600,7 +634,7 @@ watch(
             <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
               <div class="flex flex-wrap gap-3 items-center mb-3">
                 <label class="text-sm text-zinc-400">Jour</label>
-                <input v-model="day" type="date" class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2" />
+                <input v-model="day"type="date" @focus="onDayInputFocus" @change="onDayInputChange" class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"/>
               </div>
 
               <label class="text-sm text-zinc-400">Décris ta journée</label>

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import Login from "./views/Login.vue";
 import Activity from "./views/Activity.vue";
 import ResetPassword from "./views/ResetPassword.vue";
+import PmDashboard from "./views/PmDashboard.vue";
 import CompleteProfile from "./views/CompleteProfile.vue";
 import { supabase } from "./lib/supabase";
 import { api } from "./lib/api";
@@ -12,11 +13,9 @@ const router = createRouter({
     { path: "/", redirect: "/activity" },
     { path: "/login", component: Login },
     { path: "/reset-password", component: ResetPassword },
-
-    // ✅ nouveau
     { path: "/complete-profile", component: CompleteProfile },
-
     { path: "/activity", component: Activity },
+    { path: "/pm-dashboard", component: PmDashboard },
   ],
 });
 
@@ -35,7 +34,7 @@ router.beforeEach(async (to) => {
     return "/activity";
   }
 
-  // ✅ Si connecté, on force le profil complété
+  // Si connecté, on force le profil complété
   if (isAuthed && !publicRoutes.includes(to.path)) {
     // On autorise /complete-profile (sinon boucle infinie)
     if (to.path === profileRoute) return true;

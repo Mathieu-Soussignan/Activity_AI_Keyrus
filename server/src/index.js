@@ -678,6 +678,15 @@ app.get("/api/activities/export", async (req, res) => {
     if (error) throw new Error(error.message);
 
     const header = "day;sujet;projet;temps_passe_h;type;impute";
+    function sanitizeCsvCell(v) {
+      let s = String(v ?? "")
+        .replaceAll(";", ",")
+        .replaceAll("\n", " ")
+        .replaceAll("\r", " ");
+
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return s;
+    }
     const lines = (data ?? []).map((r) =>
       [r.day, r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
         .map((v) =>
@@ -837,7 +846,7 @@ app.get("/api/pm/export", async (req, res) => {
 
     const { user, jwt } = auth;
 
-    // ✅ Vérif rôle PM
+    // Vérif rôle PM
     const prof = await getRole(user.id);
     if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
 
@@ -877,6 +886,15 @@ app.get("/api/pm/export", async (req, res) => {
 
     // 3) CSV
     const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
+    function sanitizeCsvCell(v) {
+      let s = String(v ?? "")
+        .replaceAll(";", ",")
+        .replaceAll("\n", " ")
+        .replaceAll("\r", " ");
+
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return s;
+    }
     const lines = (acts ?? []).map((r) => {
       const fullName = nameById.get(r.user_id) ?? r.user_id;
 
