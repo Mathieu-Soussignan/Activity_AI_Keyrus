@@ -57,6 +57,28 @@ const monthError = ref<string>("");
 // Anti-perte
 const lastSavedSnapshot = ref<string>("");
 
+// --------------------
+// Temps par tranches (Whoz-like)
+// --------------------
+const TIME_STEP = 0.25;
+const MAX_HOURS_PER_ROW = 24;
+
+// Options 0 -> 12h par pas de 0.25 (tu peux monter à 24 si tu veux)
+const TIME_OPTIONS = computed(() => {
+  const out: number[] = [];
+  for (let v = 0; v <= 12 + 1e-9; v += TIME_STEP) {
+    out.push(Math.round(v / TIME_STEP) * TIME_STEP);
+  }
+  return out;
+});
+
+function clampToStep(x: number) {
+  const n = Number(x ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  const clamped = Math.min(Math.max(n, 0), MAX_HOURS_PER_ROW);
+  return Math.round(clamped / TIME_STEP) * TIME_STEP;
+}
+
 const totalHours = computed(() =>
   rows.value.reduce((acc, r) => acc + (Number(r.temps_passe_h) || 0), 0)
 );
@@ -104,6 +126,11 @@ function weekdayLabelFR(date: Date): string {
 function isWeekendDate(date: Date) {
   const w = date.getDay();
   return w === 0 || w === 6;
+}
+function isCurrentMonthSelected() {
+  const selected = new Date(day.value);
+  const now = new Date();
+  return selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
 }
 
 // --------------------
@@ -285,7 +312,7 @@ async function loadDayFromApi(targetDay: string) {
       day: targetDay,
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
-      temps_passe_h: Number(r.temps_passe_h ?? 0),
+      temps_passe_h: clampToStep(Number(r.temps_passe_h ?? 0)),
       type: (r.type ?? "Ticket Non défini") as ActivityType,
       impute: r.impute ?? "",
     }));
@@ -301,7 +328,7 @@ function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_h" | "typ
   return [
     (r.sujet ?? "").trim().toLowerCase(),
     (r.projet ?? "").trim().toLowerCase(),
-    String(Number(r.temps_passe_h ?? 0)),
+    String(clampToStep(Number(r.temps_passe_h ?? 0))),
     r.type,
   ].join("|");
 }
@@ -325,7 +352,7 @@ async function parseAi() {
       day: day.value,
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
-      temps_passe_h: Number(r.temps_passe_h ?? 0),
+      temps_passe_h: clampToStep(Number(r.temps_passe_h ?? 0)),
       type: (r.type ?? "Ticket Non défini") as ActivityType,
       impute: r.impute ?? "",
     }));
@@ -357,7 +384,10 @@ async function saveDay() {
   try {
     const { data } = await api.post("/api/activities/upsertDay", {
       day: day.value,
-      rows: rows.value.map(({ id, ...rest }) => rest), // ✅ remove UI-only id
+      rows: rows.value.map(({ id, ...rest }) => ({
+        ...rest,
+        temps_passe_h: clampToStep(Number(rest.temps_passe_h ?? 0)),
+      })), // ✅ remove UI-only id + clamp
     });
 
     msg.value = `✅ Sauvegardé (${data?.inserted ?? 0} lignes)`;
@@ -396,13 +426,11 @@ async function logout() {
   }
 }
 
-// Export: UX en place, endpoint à brancher
-const canExport = computed(() => {
-  const selected = new Date(day.value);
-  const now = new Date();
-  const isCurrent =
-    selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
-  return !isCurrent;
+// ✅ Export: toujours possible (même mois en cours)
+const canExport = computed(() => true);
+const exportHint = computed(() => {
+  if (!isCurrentMonthSelected()) return "";
+  return "⚠️ Mois en cours : l’export est possible même si tout n’est pas rempli.";
 });
 
 async function exportExcel() {
@@ -500,14 +528,19 @@ watch(
               </p>
             </div>
 
-            <button
-              @click="exportExcel"
-              :disabled="!canExport"
-              class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
-              title="Export disponible une fois le mois terminé (règle simple)"
-            >
-              Export Excel
-            </button>
+            <div class="flex flex-col items-end gap-1">
+              <button
+                @click="exportExcel"
+                :disabled="!canExport"
+                class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
+                title="Exporter le mois affiché"
+              >
+                Export Excel
+              </button>
+              <div v-if="exportHint" class="text-[11px] text-amber-300/80">
+                {{ exportHint }}
+              </div>
+            </div>
           </div>
 
           <p v-if="monthError" class="mt-3 text-sm text-red-300">
@@ -515,9 +548,7 @@ watch(
           </p>
 
           <div class="mt-4">
-            <div v-if="loadingMonth" class="text-sm text-zinc-400">
-              Chargement du mois…
-            </div>
+            <div v-if="loadingMonth" class="text-sm text-zinc-400">Chargement du mois…</div>
 
             <ul v-else class="space-y-2 max-h-[65vh] overflow-auto pr-1">
               <li
@@ -548,9 +579,7 @@ watch(
                         <template v-else>❌ Vide</template>
                       </span>
 
-                      <span class="text-xs text-zinc-400">
-                        {{ d.linesCount }} ligne(s)
-                      </span>
+                      <span class="text-xs text-zinc-400">{{ d.linesCount }} ligne(s)</span>
                     </div>
                   </div>
                 </div>
@@ -571,11 +600,7 @@ watch(
             <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
               <div class="flex flex-wrap gap-3 items-center mb-3">
                 <label class="text-sm text-zinc-400">Jour</label>
-                <input
-                  v-model="day"
-                  type="date"
-                  class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
-                />
+                <input v-model="day" type="date" class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2" />
               </div>
 
               <label class="text-sm text-zinc-400">Décris ta journée</label>
@@ -603,9 +628,7 @@ watch(
                 </button>
               </div>
 
-              <p v-if="msg" class="mt-3 text-sm text-zinc-300">
-                {{ msg }}
-              </p>
+              <p v-if="msg" class="mt-3 text-sm text-zinc-300">{{ msg }}</p>
             </div>
 
             <!-- Preview -->
@@ -622,7 +645,7 @@ watch(
                   </button>
                 </div>
 
-                <div class="text-zinc-400 text-sm">Total : {{ totalHours.toFixed(1) }}h</div>
+                <div class="text-zinc-400 text-sm">Total : {{ totalHours.toFixed(2) }}h</div>
               </div>
 
               <div class="overflow-auto">
@@ -640,10 +663,7 @@ watch(
                   <tbody>
                     <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
                       <td class="py-2 pr-2">
-                        <input
-                          v-model="r.sujet"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        />
+                        <input v-model="r.sujet" class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1" />
                       </td>
 
                       <td class="py-2 pr-2">
@@ -658,22 +678,20 @@ watch(
                         </datalist>
                       </td>
 
+                      <!-- ✅ Temps par tranches -->
                       <td class="py-2 pr-2">
-                        <input
+                        <select
                           v-model.number="r.temps_passe_h"
-                          type="number"
-                          step="0.5"
-                          min="0"
-                          max="24"
-                          class="w-24 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        />
+                          class="w-28 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                        >
+                          <option v-for="t in TIME_OPTIONS" :key="t" :value="t">
+                            {{ t.toFixed(2).replace(/\.00$/, "") }}
+                          </option>
+                        </select>
                       </td>
 
                       <td class="py-2 pr-2">
-                        <select
-                          v-model="r.type"
-                          class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        >
+                        <select v-model="r.type" class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1">
                           <optgroup label="Tickets">
                             <option value="Evol">Evol</option>
                             <option value="Ano">Ano</option>
