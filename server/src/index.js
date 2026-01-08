@@ -680,7 +680,12 @@ app.get("/api/activities/export", async (req, res) => {
     const header = "day;sujet;projet;temps_passe_h;type;impute";
     const lines = (data ?? []).map((r) =>
       [r.day, r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
-        .map((v) => String(v ?? "").replaceAll(";", ","))
+        .map((v) =>
+          String(v ?? "")
+            .replaceAll(";", ",")
+            .replaceAll("\n", " ")
+            .replaceAll("\r", " ")
+        )
         .join(";")
     );
 
@@ -694,7 +699,8 @@ app.get("/api/activities/export", async (req, res) => {
         "0"
       )}.csv"`
     );
-    return res.send(csv);
+    const csvWithBom = "\uFEFF" + csv;
+    return res.send(csvWithBom);
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
@@ -815,6 +821,94 @@ app.get("/api/pm/completion", async (req, res) => {
     }));
 
     return res.json({ from: q.from, to: q.to, users: result });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * GET /api/pm/export?year=YYYY&month=M
+ * PM only: export CSV global (tous les users) avec full_name
+ */
+app.get("/api/pm/export", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+
+    // ✅ Vérif rôle PM
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z
+      .object({
+        year: z.coerce.number().int().min(2000).max(2100),
+        month: z.coerce.number().int().min(1).max(12),
+      })
+      .parse(req.query);
+
+    const { startStr, endStr } = startEndOfMonth(q.year, q.month);
+
+    // On utilise un client user-scoped (jwt du PM) pour respecter RLS
+    // (à condition que tes policies autorisent le PM à lire profiles + activities)
+    const supabaseUser = supabaseForJwt(jwt);
+
+    // 1) Profiles: id -> full_name (+ role si tu veux)
+    const { data: profiles, error: pErr } = await supabaseUser
+      .from("profiles")
+      .select("id, full_name, role");
+    if (pErr) throw new Error(pErr.message);
+
+    const nameById = new Map(
+      (profiles ?? []).map((p) => [p.id, (p.full_name ?? "").trim() || p.id])
+    );
+
+    // 2) Activities du mois (tous users)
+    const { data: acts, error: aErr } = await supabaseUser
+      .from("activities")
+      .select("user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .gte("day", startStr)
+      .lte("day", endStr)
+      .order("user_id", { ascending: true })
+      .order("day", { ascending: true });
+
+    if (aErr) throw new Error(aErr.message);
+
+    // 3) CSV
+    const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
+    const lines = (acts ?? []).map((r) => {
+      const fullName = nameById.get(r.user_id) ?? r.user_id;
+
+      return [
+        fullName,
+        r.user_id,
+        r.day,
+        r.sujet,
+        r.projet,
+        r.temps_passe_h,
+        r.type,
+        r.impute,
+      ]
+        .map((v) =>
+          String(v ?? "")
+            .replaceAll(";", ",")
+            .replaceAll("\n", " ")
+            .replaceAll("\r", " ")
+        )
+        .join(";");
+    });
+
+    const csv = [header, ...lines].join("\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_CP_${q.year}-${String(q.month).padStart(2, "0")}.csv"`
+    );
+
+    const csvWithBom = "\uFEFF" + csv;
+    return res.send(csvWithBom);
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
