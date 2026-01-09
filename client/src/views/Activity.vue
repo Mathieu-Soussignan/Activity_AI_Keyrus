@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { supabase } from "../lib/supabase";
-import { ensureMe, clearMeCache, type Me} from "../lib/me";
+import { ensureMe, clearMeCache, type Me } from "../lib/me";
 import { api } from "../lib/api";
 import { useRouter } from "vue-router";
 
@@ -21,7 +21,8 @@ type Row = {
   day: string;
   sujet: string;
   projet: string;
-  temps_passe_h: number;
+  temps_passe_h: number; // toujours en heures côté DB/API
+  temps_passe_j: number; // affichage UI en jours
   type: ActivityType;
   impute: string;
 };
@@ -33,7 +34,7 @@ type MonthDayItem = {
   weekdayLabel: string;
   isWeekend: boolean;
   status: MonthDayStatus;
-  totalHours: number;
+  totalHours: number; // ✅ on garde en heures dans le panel mois (comme avant)
   linesCount: number;
 };
 
@@ -71,7 +72,7 @@ const monthError = ref<string>("");
 // Anti-perte
 const lastSavedSnapshot = ref<string>("");
 
-// ---- Day change controller (anti double confirm / anti faux dirty)
+// ---- Day change controller
 const changingDay = ref(false);
 let lastDayBeforeInput = day.value;
 
@@ -83,7 +84,6 @@ async function onDayInputChange(e: Event) {
   const wanted = (e.target as HTMLInputElement)?.value;
   if (!wanted || wanted === lastDayBeforeInput) return;
 
-  // v-model a déjà changé day, on revient en arrière pour passer par changeDay()
   day.value = lastDayBeforeInput;
   await changeDay(wanted);
 }
@@ -110,29 +110,53 @@ async function changeDay(targetDay: string, opts?: { force?: boolean }) {
 }
 
 // --------------------
-// Temps par tranches (Whoz-like)
+// Temps en jours (UI)
 // --------------------
-const TIME_STEP = 0.25;
-const MAX_HOURS_PER_ROW = 24;
+const DAY_STEP = 0.25;
+const MAX_DAYS_PER_ROW = 1;
+const HOURS_PER_DAY = 7;
 
-// Options 0 -> 12h par pas de 0.25 (tu peux monter à 24 si tu veux)
-const TIME_OPTIONS = computed(() => {
+// Options 0 -> 1J par pas de 0.25
+const DAY_OPTIONS = computed(() => {
   const out: number[] = [];
-  for (let v = 0; v <= 12 + 1e-9; v += TIME_STEP) {
-    out.push(Math.round(v / TIME_STEP) * TIME_STEP);
+  for (let v = 0; v <= MAX_DAYS_PER_ROW + 1e-9; v += DAY_STEP) {
+    out.push(Math.round(v / DAY_STEP) * DAY_STEP);
   }
   return out;
 });
 
-function clampToStep(x: number) {
+function clampToDayStep(x: number) {
+  const n = Number(x ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  const clamped = Math.min(Math.max(n, 0), MAX_DAYS_PER_ROW);
+  return Math.round(clamped / DAY_STEP) * DAY_STEP;
+}
+
+// clamp heures au quart d’heure (utile si l’API renvoie 1.333 etc)
+const HOUR_STEP = 0.25;
+const MAX_HOURS_PER_ROW = 24;
+function clampToHourStep(x: number) {
   const n = Number(x ?? 0);
   if (!Number.isFinite(n)) return 0;
   const clamped = Math.min(Math.max(n, 0), MAX_HOURS_PER_ROW);
-  return Math.round(clamped / TIME_STEP) * TIME_STEP;
+  return Math.round(clamped / HOUR_STEP) * HOUR_STEP;
 }
 
+function hToJ(h: number) {
+  return clampToDayStep(clampToHourStep(Number(h || 0)) / HOURS_PER_DAY);
+}
+
+function jToH(j: number) {
+  const h = Number(j || 0) * HOURS_PER_DAY;
+  return clampToHourStep(h);
+}
+
+const totalDays = computed(() =>
+  rows.value.reduce((acc, r) => acc + (Number(r.temps_passe_j) || 0), 0)
+);
+
 const totalHours = computed(() =>
-  rows.value.reduce((acc, r) => acc + (Number(r.temps_passe_h) || 0), 0)
+  Math.round(totalDays.value * HOURS_PER_DAY * 10) / 10
 );
 
 const monthTitle = computed(() => {
@@ -143,18 +167,22 @@ const monthTitle = computed(() => {
 const filledDaysCount = computed(() =>
   monthDays.value.filter((d) => d.status === "filled").length
 );
+
 const missingDaysCount = computed(() =>
   monthDays.value.filter((d) => d.status === "empty").length
 );
+
 const monthTotalHours = computed(() =>
-  monthDays.value.reduce((acc, d) => acc + (Number(d.totalHours) || 0), 0).toFixed(1)
+  monthDays.value
+    .reduce((acc, d) => acc + (Number(d.totalHours) || 0), 0)
+    .toFixed(1)
 );
 
 function snapshotCurrent() {
   return JSON.stringify({
     day: day.value,
     text: text.value,
-    rows: rows.value.map(({ id, ...rest }) => rest), // ignore UI-only id
+    rows: rows.value.map(({ id, ...rest }) => rest),
   });
 }
 
@@ -182,11 +210,14 @@ function isWeekendDate(date: Date) {
 function isCurrentMonthSelected() {
   const selected = new Date(day.value);
   const now = new Date();
-  return selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
+  return (
+    selected.getFullYear() === now.getFullYear() &&
+    selected.getMonth() === now.getMonth()
+  );
 }
 
 // --------------------
-// Rows helpers (multi-lignes / édition)
+// Rows helpers
 // --------------------
 function newEmptyRow(): Row {
   return {
@@ -195,6 +226,7 @@ function newEmptyRow(): Row {
     sujet: "",
     projet: "",
     temps_passe_h: 0,
+    temps_passe_j: 0,
     type: "Ticket Non défini",
     impute: "",
   };
@@ -241,14 +273,16 @@ async function loadProjects() {
     const { data } = await api.get("/api/projects");
     projects.value = (data?.projects ?? []) as string[];
   } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur chargement projects";
+    msg.value =
+      e?.response?.data?.error || e?.message || "Erreur chargement projects";
   }
 }
 
-// ---- API parsing helpers (robustes)
+// ---- API parsing helpers
 function coerceRows(payload: any): any[] {
   if (payload?.rows && Array.isArray(payload.rows)) return payload.rows;
-  if (payload?.activities && Array.isArray(payload.activities)) return payload.activities;
+  if (payload?.activities && Array.isArray(payload.activities))
+    return payload.activities;
   if (Array.isArray(payload)) return payload;
   return [];
 }
@@ -357,15 +391,23 @@ async function loadDayFromApi(targetDay: string) {
   try {
     const { data } = await api.get("/api/activities/day", { params: { day: targetDay } });
 
-    rows.value = coerceRows(data).map((r: any) => ({
-      id: uid(),
-      day: targetDay,
-      sujet: r.sujet ?? "",
-      projet: r.projet ?? "",
-      temps_passe_h: clampToStep(Number(r.temps_passe_h ?? 0)),
-      type: (r.type ?? "Ticket Non défini") as ActivityType,
-      impute: r.impute ?? "",
-    }));
+    rows.value = coerceRows(data).map((r: any) => {
+      const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
+      const j = clampToDayStep(
+        Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
+      );
+
+      return {
+        id: uid(),
+        day: targetDay,
+        sujet: r.sujet ?? "",
+        projet: r.projet ?? "",
+        temps_passe_h: h,
+        temps_passe_j: j,
+        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        impute: r.impute ?? "",
+      };
+    });
 
     text.value = "";
     lastSavedSnapshot.value = snapshotCurrent();
@@ -374,11 +416,11 @@ async function loadDayFromApi(targetDay: string) {
   }
 }
 
-function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_h" | "type">) {
+function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_j" | "type">) {
   return [
     (r.sujet ?? "").trim().toLowerCase(),
     (r.projet ?? "").trim().toLowerCase(),
-    String(clampToStep(Number(r.temps_passe_h ?? 0))),
+    String(clampToDayStep(Number(r.temps_passe_j ?? 0))),
     r.type,
   ].join("|");
 }
@@ -397,17 +439,24 @@ async function parseAi() {
 
     const generatedRaw = (data?.rows ?? []) as any[];
 
-    const generated: Row[] = generatedRaw.map((r) => ({
-      id: uid(),
-      day: day.value,
-      sujet: r.sujet ?? "",
-      projet: r.projet ?? "",
-      temps_passe_h: clampToStep(Number(r.temps_passe_h ?? 0)),
-      type: (r.type ?? "Ticket Non défini") as ActivityType,
-      impute: r.impute ?? "",
-    }));
+    const generated: Row[] = generatedRaw.map((r) => {
+      const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
+      const j = clampToDayStep(
+        Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
+      );
 
-    // ✅ Dédup simple (évite les doubles si on regénère)
+      return {
+        id: uid(),
+        day: day.value,
+        sujet: r.sujet ?? "",
+        projet: r.projet ?? "",
+        temps_passe_h: h,
+        temps_passe_j: j,
+        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        impute: r.impute ?? "",
+      };
+    });
+
     const seen = new Set(existing.map((r) => rowFingerprint(r)));
     const toAdd = generated.filter((r) => {
       const fp = rowFingerprint(r);
@@ -434,10 +483,16 @@ async function saveDay() {
   try {
     const { data } = await api.post("/api/activities/upsertDay", {
       day: day.value,
-      rows: rows.value.map(({ id, ...rest }) => ({
-        ...rest,
-        temps_passe_h: clampToStep(Number(rest.temps_passe_h ?? 0)),
-      })), // ✅ remove UI-only id + clamp
+      rows: rows.value.map(({ id, ...rest }) => {
+        const j = clampToDayStep(Number(rest.temps_passe_j ?? 0));
+        const h = jToH(j);
+
+        return {
+          ...rest,
+          temps_passe_j: j,      // ✅ UI
+          temps_passe_h: h,      // ✅ DB (autorité)
+        };
+      }),
     });
 
     msg.value = `✅ Sauvegardé (${data?.inserted ?? 0} lignes)`;
@@ -466,7 +521,6 @@ async function logout() {
   }
 }
 
-// ✅ Export: toujours possible (même mois en cours)
 const canExport = computed(() => true);
 const exportHint = computed(() => {
   if (!isCurrentMonthSelected()) return "";
@@ -502,18 +556,18 @@ async function exportExcel() {
 onMounted(async () => {
   await ensureAuthedOrRedirect();
 
-    // charge le profil (cached)
   try {
     me.value = await ensureMe();
   } catch {
-    // si /api/me plante, on laisse vide (pas bloquant)
     me.value = null;
   }
+
   await loadProjects();
   await loadMonth();
   await loadDayFromApi(day.value);
 });
 </script>
+
 
 <template>
   <div class="min-h-screen bg-zinc-950 text-zinc-100">
@@ -544,7 +598,7 @@ onMounted(async () => {
             Modifs non sauvegardées
           </div>
 
-          <!-- 🧭 Dashboard CP (PM only) -->
+          <!-- Dashboard CP (PM only) -->
           <button
             v-if="me?.role === 'pm'"
             @click="router.push('/pm')"
@@ -563,7 +617,6 @@ onMounted(async () => {
           </button>
         </div>
       </header>
-
 
       <!-- Layout -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -649,14 +702,20 @@ onMounted(async () => {
             <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
               <div class="flex flex-wrap gap-3 items-center mb-3">
                 <label class="text-sm text-zinc-400">Jour</label>
-                <input v-model="day"type="date" @focus="onDayInputFocus" @change="onDayInputChange" class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"/>
+                <input
+                  v-model="day"
+                  type="date"
+                  @focus="onDayInputFocus"
+                  @change="onDayInputChange"
+                  class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
+                />
               </div>
 
               <label class="text-sm text-zinc-400">Décris ta journée</label>
               <textarea
                 v-model="text"
                 class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 min-h-[110px] outline-none"
-                placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 7h."
+                placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 1J."
               />
 
               <div class="flex gap-3 mt-3">
@@ -703,7 +762,10 @@ onMounted(async () => {
                   </button>
                 </div>
 
-                <div class="text-zinc-400 text-sm">Total : {{ totalHours.toFixed(2) }}h</div>
+                <!-- ✅ Affichage jours + heures en bonus -->
+                <div class="text-zinc-400 text-sm">
+                  Total : {{ totalDays.toFixed(2) }}J ({{ totalHours.toFixed(2) }}h)
+                </div>
               </div>
 
               <div class="overflow-auto">
@@ -712,7 +774,7 @@ onMounted(async () => {
                     <tr>
                       <th class="text-left py-2 pr-2">Sujet</th>
                       <th class="text-left py-2 pr-2">Projet</th>
-                      <th class="text-left py-2 pr-2">Temps (h)</th>
+                      <th class="text-left py-2 pr-2">Temps (J)</th>
                       <th class="text-left py-2 pr-2">Type</th>
                       <th class="text-right py-2">Actions</th>
                     </tr>
@@ -721,7 +783,10 @@ onMounted(async () => {
                   <tbody>
                     <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
                       <td class="py-2 pr-2">
-                        <input v-model="r.sujet" class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1" />
+                        <input
+                          v-model="r.sujet"
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                        />
                       </td>
 
                       <td class="py-2 pr-2">
@@ -736,20 +801,23 @@ onMounted(async () => {
                         </datalist>
                       </td>
 
-                      <!-- ✅ Temps par tranches -->
+                      <!-- ✅ Temps en jours (0, 0.25, 0.5, 0.75, 1) -->
                       <td class="py-2 pr-2">
                         <select
-                          v-model.number="r.temps_passe_h"
+                          v-model.number="r.temps_passe_j"
                           class="w-28 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
-                          <option v-for="t in TIME_OPTIONS" :key="t" :value="t">
-                            {{ t.toFixed(2).replace(/\.00$/, "") }}
+                          <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
+                            {{ String(t).replace(".", ",") }} J
                           </option>
                         </select>
                       </td>
 
                       <td class="py-2 pr-2">
-                        <select v-model="r.type" class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1">
+                        <select
+                          v-model="r.type"
+                          class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                        >
                           <optgroup label="Tickets">
                             <option value="Evol">Evol</option>
                             <option value="Ano">Ano</option>
