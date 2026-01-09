@@ -222,6 +222,12 @@ function removeRow(index: number) {
   rows.value.splice(index, 1);
 }
 
+function clearAll() {
+  text.value = "";
+  msg.value = "";
+  loadingAi.value = false;
+}
+
 async function ensureAuthedOrRedirect() {
   const { data } = await supabase.auth.getSession();
   if (!data?.session) {
@@ -537,7 +543,7 @@ onMounted(async () => {
           >
             Modifs non sauvegardées
           </div>
-          
+
           <!-- 🧭 Dashboard CP (PM only) -->
           <button
             v-if="me?.role === 'pm'"
@@ -660,6 +666,15 @@ onMounted(async () => {
                   class="rounded-xl bg-white text-zinc-950 font-medium px-4 py-2 disabled:opacity-50"
                 >
                   {{ loadingAi ? "Analyse..." : "✨ Générer" }}
+                </button>
+
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  :disabled="!text && !msg"
+                  @click="clearAll"
+                >
+                  Effacer et repartir de zéro
                 </button>
 
                 <button
