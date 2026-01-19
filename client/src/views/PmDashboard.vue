@@ -53,6 +53,12 @@ const msg = ref("");
 const users = ref<UserStat[]>([]);
 const me = ref<Me | null>(null);
 
+// ---- Monthly summary (PM)
+const summaryLoading = ref(false);
+const summaryError = ref("");
+const summaryStats = ref<any | null>(null);
+const summaryText = ref<string | null>(null);
+
 const from = ref(yyyyMmDd(startOfMonth(new Date())));
 const to = ref(yyyyMmDd(endOfMonth(new Date())));
 
@@ -106,6 +112,39 @@ async function loadCompletion() {
     msg.value = e?.response?.data?.error || e?.message || "Erreur chargement dashboard CP";
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadMonthlySummary() {
+  summaryError.value = "";
+  summaryStats.value = null;
+  summaryText.value = null;
+  summaryLoading.value = true;
+
+  try {
+    // ⚠️ on se base UNIQUEMENT sur le mois sélectionné
+    const d = new Date(from.value);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+
+    // 1️⃣ stats calculées
+    const statsResp = await api.get("/api/pm/summary", {
+      params: { year, month },
+    });
+    summaryStats.value = statsResp.data;
+
+    // 2️⃣ résumé IA (optionnel mais auto ici)
+    const aiResp = await api.post("/api/pm/summary/ai", {
+      stats: statsResp.data,
+    });
+    summaryText.value = aiResp.data?.summary ?? null;
+  } catch (e: any) {
+    summaryError.value =
+      e?.response?.data?.error ||
+      e?.message ||
+      "Erreur génération résumé mensuel";
+  } finally {
+    summaryLoading.value = false;
   }
 }
 
@@ -309,6 +348,59 @@ onMounted(async () => {
         </div>
 
         <p v-if="msg" class="mt-3 text-sm text-red-200">{{ msg }}</p>
+      </div>
+
+      <!-- Résumé mensuel CP -->
+      <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 mb-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold">Résumé mensuel</h2>
+
+          <button
+            @click="loadMonthlySummary"
+            :disabled="summaryLoading"
+            class="rounded-lg bg-white text-zinc-950 px-4 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {{ summaryLoading ? "Génération..." : "Générer le résumé" }}
+          </button>
+        </div>
+
+        <p class="text-xs text-zinc-400 mb-3">
+          Résumé basé uniquement sur les données saisies pour le mois sélectionné.
+        </p>
+
+        <!-- Erreur -->
+        <p v-if="summaryError" class="text-sm text-red-200 mb-2">
+          {{ summaryError }}
+        </p>
+
+        <!-- Stats brutes (CP-friendly, traçable) -->
+        <div v-if="summaryStats" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-4">
+          <div class="rounded-lg bg-zinc-950 border border-zinc-800 p-3">
+            <div class="text-zinc-400 text-xs">Total équipe</div>
+            <div class="font-semibold">
+              {{ summaryStats.totals.days }} J · {{ summaryStats.totals.hours }} h
+            </div>
+          </div>
+
+          <div
+            v-for="(v, type) in summaryStats.byType"
+            :key="type"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 p-3"
+          >
+            <div class="text-zinc-400 text-xs">{{ type }}</div>
+            <div class="font-semibold">
+              {{ v.days.toFixed(2) }} J ({{ v.percent }}%)
+            </div>
+          </div>
+        </div>
+
+        <!-- Résumé IA -->
+        <div
+          v-if="summaryText"
+          class="rounded-xl bg-zinc-950 border border-zinc-800 p-4 whitespace-pre-line text-sm"
+        >
+          {{ summaryText }}
+        </div>
       </div>
 
       <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">

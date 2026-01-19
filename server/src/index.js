@@ -588,6 +588,90 @@ function startEndOfMonth(year, month1to12) {
   return { startStr, endStr };
 }
 
+const HOURS_PER_DAY = 7;
+
+function computeMonthlySummaryStats({
+  activities,
+  profiles,
+  year,
+  month,
+}) {
+  // ---- Totaux
+  let totalHours = 0;
+
+  const byType = {};
+  const byProject = {};
+  const byUser = {};
+
+  for (const p of profiles) {
+    byUser[p.id] = {
+      userId: p.id,
+      name: p.full_name || p.id,
+      totalHours: 0,
+      days: new Set(),
+    };
+  }
+
+  for (const a of activities) {
+    const h = Number(a.temps_passe_h || 0);
+    totalHours += h;
+
+    // by type
+    byType[a.type] ??= { hours: 0 };
+    byType[a.type].hours += h;
+
+    // by project
+    if (a.projet) {
+      byProject[a.projet] ??= { hours: 0 };
+      byProject[a.projet].hours += h;
+    }
+
+    // by user
+    const u = byUser[a.user_id];
+    if (u) {
+      u.totalHours += h;
+      u.days.add(a.day);
+    }
+  }
+
+  const totalDays = Math.round((totalHours / HOURS_PER_DAY) * 100) / 100;
+
+  // enrich byType
+  for (const t of Object.keys(byType)) {
+    byType[t].days = byType[t].hours / HOURS_PER_DAY;
+    byType[t].percent =
+      totalHours > 0
+        ? Math.round((byType[t].hours / totalHours) * 100)
+        : 0;
+  }
+
+  const topProjects = Object.entries(byProject)
+    .map(([project, v]) => ({
+      project,
+      hours: v.hours,
+      days: v.hours / HOURS_PER_DAY,
+    }))
+    .sort((a, b) => b.hours - a.hours)
+    .slice(0, 5);
+
+  const usersWithMissingDays = Object.values(byUser).filter(
+    (u) => u.days.size < 20 // volontairement simple, ajustable
+  );
+
+  return {
+    period: { year, month },
+    totals: {
+      hours: Math.round(totalHours * 10) / 10,
+      days: totalDays,
+    },
+    byType,
+    topProjects,
+    alerts: {
+      usersWithMissingDays: usersWithMissingDays.length,
+    },
+  };
+}
+
 /**
  * GET /api/activities/month?year=YYYY&month=M
  */
@@ -772,6 +856,107 @@ app.post("/api/profile/complete", async (req, res) => {
     }
 
     return res.json({ ok: true, role: finalRole });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * GET /api/pm/summary?year=YYYY&month=MM
+ * PM only – calculs purs
+ */
+app.get("/api/pm/summary", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z
+      .object({
+        year: z.coerce.number().int(),
+        month: z.coerce.number().int().min(1).max(12),
+      })
+      .parse(req.query);
+
+    const { startStr, endStr } = startEndOfMonth(q.year, q.month);
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const { data: profiles, error: pErr } = await supabaseUser
+      .from("profiles")
+      .select("id, full_name");
+    if (pErr) throw new Error(pErr.message);
+
+    const { data: activities, error: aErr } = await supabaseUser
+      .from("activities")
+      .select("user_id, day, temps_passe_h, type, projet")
+      .gte("day", startStr)
+      .lte("day", endStr);
+    if (aErr) throw new Error(aErr.message);
+
+    const stats = computeMonthlySummaryStats({
+      profiles,
+      activities,
+      year: q.year,
+      month: q.month,
+    });
+
+    return res.json(stats);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * POST /api/pm/summary/ai
+ * Reformulation uniquement
+ */
+app.post("/api/pm/summary/ai", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const body = z.object({
+      stats: z.any(),
+    }).parse(req.body);
+
+    const system = `
+Tu es un assistant de rédaction professionnelle.
+Tu ne fais AUCUN calcul.
+Tu reformules uniquement les données fournies.
+
+Structure STRICTE :
+1. Introduction (1 phrase)
+2. Trois faits marquants
+3. Deux points de vigilance
+4. Conclusion (1 phrase)
+
+Aucune supposition. Aucune interprétation humaine.
+`;
+
+    const response = await mistral.chat.complete({
+      model: MISTRAL_MODEL,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: system },
+        {
+          role: "user",
+          content: JSON.stringify(body.stats),
+        },
+      ],
+    });
+
+    const content = mistralContentToText(
+      response?.choices?.[0]?.message?.content
+    );
+
+    return res.json({ summary: content });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
