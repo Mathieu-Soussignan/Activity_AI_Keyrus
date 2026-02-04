@@ -127,7 +127,7 @@ const ActivityType = [
   "Evol",
   "Ano",
   "Incident Applicatif",
-  "Ticket Non défini",
+  "Non défini",
 ];
 
 // Normalisation robuste (accents, tirets, variantes)
@@ -145,70 +145,70 @@ function normalizeType(v) {
     .replace(/\s+/g, " ")
     .trim();
 
-const map = {
-  // ----- Travail
-  travail: "Travail",
-  dev: "Travail",
-  developpement: "Travail",
-  developper: "Travail",
-  "dev sur": "Travail",
+  const map = {
+    // ----- Travail
+    travail: "Travail",
+    dev: "Travail",
+    developpement: "Travail",
+    developper: "Travail",
+    "dev sur": "Travail",
 
-  // ----- Réunion
-  reunion: "Réunion",
-  meeting: "Réunion",
-  daily: "Réunion",
-  point: "Réunion",
-  sync: "Réunion",
+    // ----- Réunion
+    reunion: "Réunion",
+    meeting: "Réunion",
+    daily: "Réunion",
+    point: "Réunion",
+    sync: "Réunion",
 
-  // ----- Support (hors incident applicatif)
-  support: "Support",
-  assistance: "Support",
-  debug: "Support",
-  bug: "Support",
-  correction: "Support",
+    // ----- Support (hors incident applicatif)
+    support: "Support",
+    assistance: "Support",
+    debug: "Support",
+    bug: "Support",
+    correction: "Support",
 
-  // ----- Incident Applicatif
-  incident: "Incident Applicatif",
-  "incident applicatif": "Incident Applicatif",
-  "incident appli": "Incident Applicatif",
-  "incident application": "Incident Applicatif",
+    // ----- Incident Applicatif
+    incident: "Incident Applicatif",
+    "incident applicatif": "Incident Applicatif",
+    "incident appli": "Incident Applicatif",
+    "incident application": "Incident Applicatif",
 
-  // ----- Projet
-  projet: "Projet",
-  project: "Projet",
+    // ----- Projet
+    projet: "Projet",
+    project: "Projet",
 
-  // ----- Evol (legacy)
-  evol: "Evol",
-  evolution: "Evol",
-  "evolution technique": "Evol",
-  "feature": "Evol",
+    // ----- Evol (legacy)
+    evol: "Evol",
+    evolution: "Evol",
+    "evolution technique": "Evol",
+    "feature": "Evol",
 
-  // ----- Ano (legacy)
-  ano: "Ano",
-  anomalie: "Ano",
-  anomalies: "Ano",
+    // ----- Ano (legacy)
+    ano: "Ano",
+    anomalie: "Ano",
+    anomalies: "Ano",
 
-  // ----- Ticket Non défini (legacy)
-  "ticket non defini": "Ticket Non défini",
-  "non defini": "Ticket Non défini",
-  ticket: "Ticket Non défini",
+    // ----- Ticket Non défini (legacy)
+    "ticket non defini": "Non défini",
+    "non defini": "Non défini",
+    ticket: "Non défini",
 
-  // ----- Congés
-  conge: "Congés",
-  conges: "Congés",
-  cp: "Congés",
-  vacances: "Congés",
+    // ----- Congés
+    conge: "Congés",
+    conges: "Congés",
+    cp: "Congés",
+    vacances: "Congés",
 
-  // ----- Week-end
-  weekend: "Week-end",
-  "week end": "Week-end",
-  "week-end": "Week-end",
-  we: "Week-end",
+    // ----- Week-end
+    weekend: "Week-end",
+    "week end": "Week-end",
+    "week-end": "Week-end",
+    we: "Week-end",
 
-  // ----- Autre
-  autre: "Autre",
-  divers: "Autre",
-};
+    // ----- Autre
+    autre: "Autre",
+    divers: "Autre",
+  };
 
   if (ActivityType.includes(s0)) return s0;
   return map[simplified] ?? "Autre";
@@ -238,7 +238,7 @@ const RowInputSchema = z.object({
       "Evol",
       "Ano",
       "Incident Applicatif",
-      "Ticket Non défini"
+      "Non défini"
     ])
   ),
   impute: z.string().default(""),
@@ -418,7 +418,6 @@ app.post("/api/activities/upsertDay", async (req, res) => {
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
       type: r.type ?? "Autre",
-      impute: r.impute ?? "",
     }));
 
     const { data, error } = await supabaseUser
@@ -460,7 +459,6 @@ app.post("/api/activities/appendDay", async (req, res) => {
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
       type: r.type ?? "Autre",
-      impute: r.impute ?? "",
     }));
 
     const { data, error } = await supabaseUser
@@ -524,6 +522,52 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
     if (error) throw new Error(error.message);
 
     return res.json({ ok: true, inserted: data?.length ?? 0 });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * POST /api/pm/activities/update-vsa
+ * PM only: met à jour uniquement "impute" (Code VSA) sur une liste de lignes
+ */
+const UpdateVsaSchema = z.object({
+  rows: z.array(
+    z.object({
+      id: z.string().min(1),      // uuid (string côté JS)
+      impute: z.string().default(""),
+    })
+  ).min(1),
+});
+
+app.post("/api/pm/activities/update-vsa", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const body = UpdateVsaSchema.parse(req.body);
+
+    const supabaseUser = supabaseForJwt(jwt);
+
+    // updates "one by one" (simple, lisible, OK si volume raisonnable)
+    // si tu veux optimiser ensuite, on passera par RPC SQL + jsonb_to_recordset.
+    let updated = 0;
+
+    for (const r of body.rows) {
+      const { error } = await supabaseUser
+        .from("activities")
+        .update({ impute: r.impute ?? "" })
+        .eq("id", r.id);
+
+      if (error) throw new Error(error.message);
+      updated += 1;
+    }
+
+    return res.json({ ok: true, updated });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
