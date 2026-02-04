@@ -1,3 +1,9 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* 🔒 Prevent global horizontal overflow */
+html,
+body {
+  overflow-x: hidden;
+}

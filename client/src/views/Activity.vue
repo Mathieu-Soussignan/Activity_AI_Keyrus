@@ -866,11 +866,11 @@ onMounted(async () => {
               </div>
 
               <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden">
-                <div class="w-full min-w-0 overflow-x-auto">
-                  <table class="min-w-[1200px] w-max text-sm table-fixed">
+                <div class="w-full min-w-0 max-w-full overflow-x-auto">
+                  <table class="min-w-full text-sm table-fixed">
                     <colgroup>
                       <col class="w-32" />
-                      <col class="w-[22rem]" />
+                      <col class="w-[20rem]" />
                       <col class="w-48" />
                       <col class="w-40" />
                       <col class="w-44" />
