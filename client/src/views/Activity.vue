@@ -865,18 +865,8 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div class="w-full max-w-full overflow-x-auto overflow-y-hidden min-w-0">
-                <table class="w-full text-sm table-fixed">
-                  <colgroup>
-                    <col class="w-32" />
-                    <col class="w-[22rem]" />
-                    <col class="w-48" />
-                    <col class="w-40" />
-                    <col class="w-44" />
-                    <col class="w-44" />
-                    <col class="w-28" />
-                  </colgroup>
-
+              <div class="overflow-auto">
+                <table class="w-full text-sm">
                   <thead class="text-zinc-400">
                     <tr>
                       <th class="text-left py-2 pr-2">ID Ticket</th>
@@ -892,33 +882,37 @@ onMounted(async () => {
                   <tbody>
                     <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
                       <!-- ID Ticket -->
-                      <td class="py-2 pr-2 min-w-0">
+                      <td class="py-2 pr-2">
                         <input
                           v-model="r.id_ticket"
-                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                          class="w-32 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                           placeholder="ex: INC12345"
                         />
                       </td>
 
                       <!-- Sujet -->
-                      <td class="py-2 pr-2 min-w-0">
+                      <td class="py-2 pr-2">
                         <input
                           v-model="r.sujet"
-                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                          class="w-full min-w-[240px] rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                           placeholder="Ex: Incident API, Evol AMP lot2..."
                         />
                       </td>
 
                       <!-- Projet -->
-                      <td class="py-2 pr-2 min-w-0">
+                      <td class="py-2 pr-2">
                         <select
                           v-model="r.projet"
-                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                          class="w-full min-w-[180px] rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <option value="">(Non défini)</option>
 
+                          <!-- Valeur custom conservée si elle existe déjà en DB -->
                           <option
-                            v-if="r.projet && !PROJECT_GROUPS.some((g) => g.items.includes(r.projet))"
+                            v-if="
+                              r.projet &&
+                              !PROJECT_GROUPS.some((g) => g.items.includes(r.projet))
+                            "
                             :value="r.projet"
                           >
                             Autre : {{ r.projet }}
@@ -931,6 +925,7 @@ onMounted(async () => {
                           </optgroup>
                         </select>
 
+                        <!-- Optionnel : aide IA / historique projets -->
                         <div class="text-[11px] text-zinc-500 mt-1">
                           Astuce : garde des libellés stables (ça améliore l’export et le reporting).
                         </div>
@@ -940,7 +935,7 @@ onMounted(async () => {
                       <td class="py-2 pr-2">
                         <select
                           v-model.number="r.temps_passe_j"
-                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          class="w-32 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
                             {{ String(t).replace(".", ",") }} J
@@ -952,7 +947,7 @@ onMounted(async () => {
                       <td class="py-2 pr-2">
                         <select
                           v-model="r.type"
-                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <optgroup label="Tickets">
                             <option value="Evol">Evol</option>
@@ -974,7 +969,7 @@ onMounted(async () => {
                         <input
                           :value="r.impute || myVsaCode"
                           disabled
-                          class="w-full min-w-0 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
+                          class="w-40 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
                           title="Champ verrouillé : alimenté automatiquement (Code VSA)"
                         />
                       </td>
