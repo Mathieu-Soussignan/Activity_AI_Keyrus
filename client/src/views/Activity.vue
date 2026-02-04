@@ -867,9 +867,12 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div class="-mx-4 mt-2 w-full overflow-x-auto overflow-y-hidden min-w-0">
+              <!-- ✅ Un seul wrapper scroll, et shrink autorisé (min-w-0) -->
+              <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden min-w-0">
                 <div class="px-4 min-w-0">
-                  <table class="w-full min-w-full w-max text-sm table-fixed">
+                  <!-- ✅ w-max pour laisser le tableau dépasser et scroller,
+                       table-fixed pour stabiliser les colonnes -->
+                  <table class="min-w-full w-max text-sm table-fixed">
                     <thead class="text-zinc-400">
                       <tr>
                         <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
