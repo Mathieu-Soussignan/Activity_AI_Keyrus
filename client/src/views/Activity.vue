@@ -711,7 +711,7 @@ onMounted(async () => {
         </aside>
 
         <!-- Colonne principale -->
-        <section class="lg:col-span-8">
+        <section class="lg:col-span-8 min-w-0">
           <div class="grid gap-4">
             <!-- Input -->
             <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
@@ -764,7 +764,7 @@ onMounted(async () => {
             </div>
 
             <!-- Preview -->
-            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 min-w-0">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-2">
                   <h2 class="font-semibold">Prévisualisation</h2>
@@ -782,8 +782,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div class="overflow-auto">
-                <!-- ✅ Version Excel-like : attend que Row contienne id_ticket + impute + day -->
+              <div class="overflow-x-auto overflow-y-hidden">
                 <table class="w-full text-sm table-fixed">
                   <thead class="text-zinc-400">
                     <tr>
