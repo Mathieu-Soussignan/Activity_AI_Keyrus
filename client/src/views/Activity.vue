@@ -661,8 +661,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-zinc-950 text-zinc-100 overflow-x-hidden">
-    <div class="max-w-6xl mx-auto p-6 overflow-x-hidden">
+  <div class="min-h-screen bg-zinc-950 text-zinc-100">
+    <div class="max-w-6xl mx-auto p-6">
       <!-- Header -->
       <header class="flex items-center justify-between mb-6">
         <div>
@@ -712,7 +712,7 @@ onMounted(async () => {
       <!-- Layout -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <!-- Mois en cours -->
-        <aside class="lg:col-span-4 min-w-0 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+        <aside class="lg:col-span-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
           <div class="flex items-center justify-between gap-2">
             <div>
               <h2 class="font-semibold capitalize">{{ monthTitle }}</h2>
@@ -748,7 +748,7 @@ onMounted(async () => {
                 v-for="d in monthDays"
                 :key="d.day"
                 @click="selectDayFromMonthPanel(d.day)"
-                class="min-w-0 flex items-center justify-between gap-3 p-2 rounded-xl border border-zinc-800 hover:bg-zinc-800/40 cursor-pointer"
+                class="flex items-center justify-between gap-3 p-2 rounded-xl border border-zinc-800 hover:bg-zinc-800/40 cursor-pointer"
                 :class="day === d.day ? 'bg-zinc-800/60 border-zinc-700' : ''"
               >
                 <div class="flex items-center gap-3">
@@ -779,7 +779,7 @@ onMounted(async () => {
 
                 <div class="text-right">
                   <div class="text-sm font-semibold">{{ d.totalHours }}h</div>
-                  <div class="text-[11px] text-zinc-500 font-mono truncate max-w-[90px]">{{ d.day }}</div>
+                  <div class="text-[11px] text-zinc-500 font-mono">{{ d.day }}</div>
                 </div>
               </li>
             </ul>
