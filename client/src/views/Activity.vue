@@ -751,14 +751,14 @@ onMounted(async () => {
                 class="min-w-0 flex items-center justify-between gap-3 p-2 rounded-xl border border-zinc-800 hover:bg-zinc-800/40 cursor-pointer"
                 :class="day === d.day ? 'bg-zinc-800/60 border-zinc-700' : ''"
               >
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-3 min-w-0">
                   <div class="w-12 text-center">
                     <div class="text-xs text-zinc-400">{{ d.weekdayLabel }}</div>
                     <div class="text-base font-semibold">{{ d.dayNumber }}</div>
                   </div>
 
-                  <div class="text-sm">
-                    <div class="flex items-center gap-2">
+                  <div class="text-sm min-w-0">
+                    <div class="flex items-center gap-2 min-w-0">
                       <span
                         class="px-2 py-0.5 rounded-full text-xs border"
                         :class="{
@@ -772,14 +772,16 @@ onMounted(async () => {
                         <template v-else>❌ Vide</template>
                       </span>
 
-                      <span class="text-xs text-zinc-400">{{ d.linesCount }} ligne(s)</span>
+                      <span class="text-xs text-zinc-400 whitespace-nowrap">{{ d.linesCount }} ligne(s)</span>
                     </div>
                   </div>
                 </div>
 
-                <div class="text-right">
+                <div class="text-right min-w-0">
                   <div class="text-sm font-semibold">{{ d.totalHours }}h</div>
-                  <div class="text-[11px] text-zinc-500 font-mono truncate max-w-[90px]">{{ d.day }}</div>
+                  <div class="text-[11px] text-zinc-500 font-mono truncate max-w-[90px]">
+                    {{ d.day }}
+                  </div>
                 </div>
               </li>
             </ul>
@@ -788,10 +790,10 @@ onMounted(async () => {
 
         <!-- Colonne principale -->
         <section class="lg:col-span-8 min-w-0">
-          <div class="grid gap-4">
+          <div class="grid gap-4 min-w-0">
             <!-- Input -->
             <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 min-w-0">
-              <div class="flex flex-wrap gap-3 items-center mb-3">
+              <div class="flex flex-wrap gap-3 items-center mb-3 min-w-0">
                 <label class="text-sm text-zinc-400">Jour</label>
                 <input
                   v-model="day"
@@ -801,7 +803,7 @@ onMounted(async () => {
                   class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
                 />
 
-                <div class="ml-auto text-xs text-zinc-400">
+                <div class="ml-auto text-xs text-zinc-400 min-w-0">
                   Code VSA :
                   <span class="font-mono text-zinc-200">{{ myVsaCode || "—" }}</span>
                 </div>
@@ -811,12 +813,12 @@ onMounted(async () => {
               <textarea
                 v-model="text"
                 class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2
-                      min-h-[110px] max-h-[220px] overflow-y-auto outline-none
-                      whitespace-pre-wrap break-words"
+                       min-h-[110px] max-h-[220px] overflow-y-auto outline-none
+                       whitespace-pre-wrap break-words"
                 placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 1J."
               />
 
-              <div class="flex gap-3 mt-3">
+              <div class="flex gap-3 mt-3 flex-wrap">
                 <button
                   @click="parseAi"
                   :disabled="loadingAi || !text.trim()"
@@ -847,9 +849,9 @@ onMounted(async () => {
             </div>
 
             <!-- Preview -->
-            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-              <div class="flex items-center justify-between mb-3">
-                <div class="flex items-center gap-2">
+            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 min-w-0">
+              <div class="flex items-center justify-between mb-3 gap-3 min-w-0">
+                <div class="flex items-center gap-2 min-w-0">
                   <h2 class="font-semibold">Prévisualisation</h2>
 
                   <button
@@ -860,61 +862,54 @@ onMounted(async () => {
                   </button>
                 </div>
 
-                <div class="text-zinc-400 text-sm">
+                <div class="text-zinc-400 text-sm whitespace-nowrap">
                   Total : {{ totalDays.toFixed(2) }}J ({{ totalHours.toFixed(2) }}h)
                 </div>
               </div>
 
-              <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden">
-                <div class="w-full min-w-0 max-w-full overflow-x-auto">
-                  <table class="min-w-full text-sm table-fixed">
-                    <!-- <colgroup>
-                      <col class="w-32" />
-                      <col class="w-[20rem]" />
-                      <col class="w-48" />
-                      <col class="w-40" />
-                      <col class="w-44" />
-                      <col class="w-44" />
-                      <col class="w-28" />
-                    </colgroup> -->
-
+              <!-- ✅ Un seul wrapper scroll, et shrink autorisé (min-w-0) -->
+              <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden min-w-0">
+                <div class="px-4 min-w-0">
+                  <!-- ✅ w-max pour laisser le tableau dépasser et scroller,
+                       table-fixed pour stabiliser les colonnes -->
+                  <table class="w-max text-sm table-fixed">
                     <thead class="text-zinc-400">
                       <tr>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Projet</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Type</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
-                        <th class="text-right py-2 whitespace-nowrap">Actions</th>
+                        <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
+                        <th class="w-[20rem] text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
+                        <th class="w-48 text-left py-2 pr-2 whitespace-nowrap">Projet</th>
+                        <th class="w-40 text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
+                        <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Type</th>
+                        <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
+                        <th class="w-28 text-right py-2 whitespace-nowrap">Actions</th>
                       </tr>
                     </thead>
 
                     <tbody>
                       <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
                         <!-- ID Ticket -->
-                        <td class="py-2 pr-2 min-w-0">
+                        <td class="py-2 pr-2 max-w-0 overflow-hidden">
                           <input
                             v-model="r.id_ticket"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                             placeholder="ex: INC12345"
                           />
                         </td>
 
                         <!-- Sujet -->
-                        <td class="py-2 pr-2 min-w-0">
+                        <td class="py-2 pr-2 max-w-0 overflow-hidden">
                           <input
                             v-model="r.sujet"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                             placeholder="Ex: Incident API, Evol AMP lot2..."
                           />
                         </td>
 
                         <!-- Projet -->
-                        <td class="py-2 pr-2 min-w-0">
+                        <td class="py-2 pr-2 max-w-0 overflow-hidden">
                           <select
                             v-model="r.projet"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                           >
                             <option value="">(Non défini)</option>
 
