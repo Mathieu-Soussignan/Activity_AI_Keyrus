@@ -872,7 +872,7 @@ onMounted(async () => {
                 <div class="px-4 min-w-0">
                   <!-- ✅ w-max pour laisser le tableau dépasser et scroller,
                        table-fixed pour stabiliser les colonnes -->
-                  <table class="min-w-full w-max text-sm table-fixed">
+                  <table class="w-max text-sm table-fixed">
                     <thead class="text-zinc-400">
                       <tr>
                         <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
