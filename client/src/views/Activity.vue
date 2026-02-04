@@ -661,8 +661,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-zinc-950 text-zinc-100">
-    <div class="max-w-6xl mx-auto p-6">
+  <div class="min-h-screen bg-zinc-950 text-zinc-100 overflow-x-hidden">
+    <div class="max-w-6xl mx-auto p-6 overflow-x-hidden">
       <!-- Header -->
       <header class="flex items-center justify-between mb-6">
         <div>
@@ -866,7 +866,7 @@ onMounted(async () => {
               </div>
 
               <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden">
-                <div class="w-full min-w-0 overflow-x-auto">
+                <div class="px-4 min-w-full">
                   <table class="min-w-[1200px] w-max text-sm table-fixed">
                     <colgroup>
                       <col class="w-32" />
