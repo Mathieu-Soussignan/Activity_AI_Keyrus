@@ -868,7 +868,7 @@ onMounted(async () => {
               <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden">
                 <div class="w-full min-w-0 max-w-full overflow-x-auto">
                   <table class="min-w-full text-sm table-fixed">
-                    <!-- <colgroup>
+                    <colgroup>
                       <col class="w-32" />
                       <col class="w-[20rem]" />
                       <col class="w-48" />
@@ -876,7 +876,7 @@ onMounted(async () => {
                       <col class="w-44" />
                       <col class="w-44" />
                       <col class="w-28" />
-                    </colgroup> -->
+                    </colgroup>
 
                     <thead class="text-zinc-400">
                       <tr>
