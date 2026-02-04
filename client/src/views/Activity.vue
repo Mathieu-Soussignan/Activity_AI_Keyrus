@@ -787,10 +787,10 @@ onMounted(async () => {
         </aside>
 
         <!-- Colonne principale -->
-        <section class="lg:col-span-8">
+        <section class="lg:col-span-8 min-w-0">
           <div class="grid gap-4">
             <!-- Input -->
-            <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
+            <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 min-w-0">
               <div class="flex flex-wrap gap-3 items-center mb-3">
                 <label class="text-sm text-zinc-400">Jour</label>
                 <input
@@ -810,8 +810,10 @@ onMounted(async () => {
               <label class="text-sm text-zinc-400">Décris ta journée</label>
               <textarea
                 v-model="text"
-                class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 min-h-[110px] outline-none"
-                placeholder="Ex: Matin incident applicatif (INC12345). Aprem evol AMP lot2. Total 1J."
+                class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2
+                      min-h-[110px] max-h-[220px] overflow-y-auto outline-none
+                      whitespace-pre-wrap break-words"
+                placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 1J."
               />
 
               <div class="flex gap-3 mt-3">
