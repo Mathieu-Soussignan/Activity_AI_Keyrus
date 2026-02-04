@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { supabase } from "../lib/supabase";
 import { ensureMe, clearMeCache, type Me } from "../lib/me";
 import { api } from "../lib/api";
@@ -7,35 +7,24 @@ import { useRouter } from "vue-router";
 
 const router = useRouter();
 
-/**
- *   Aligné Excel (PM Sitraka)
- * - Type: inclut "Non défini"
- * - Colonnes: Date, ID Ticket, Sujet, Projet, Charge réelle, Type, Code VSA
- * - Code VSA: auto + verrouillé
- * - Projet: liste groupée (optgroup) + possibilité de valeur custom si besoin
- */
 type ActivityType =
   | "Evol"
   | "Ano"
   | "Incident Applicatif"
   | "Projet"
-  | "Non défini"
+  | "Ticket Non défini"
   | "Congés"
   | "Week-end";
 
 type Row = {
   id: string;
   day: string;
-
-  id_ticket: string;
   sujet: string;
   projet: string;
-
-  temps_passe_h: number; // autorité DB (heures)
-  temps_passe_j: number; // UI (jours)
-
+  temps_passe_h: number; // toujours en heures côté DB/API
+  temps_passe_j: number; // affichage UI en jours
   type: ActivityType;
-  impute: string; // Code VSA (verrouillé)
+  impute: string;
 };
 
 type MonthDayStatus = "weekend" | "filled" | "empty";
@@ -45,29 +34,17 @@ type MonthDayItem = {
   weekdayLabel: string;
   isWeekend: boolean;
   status: MonthDayStatus;
-  totalHours: number; // panel mois en heures
+  totalHours: number; // ✅ on garde en heures dans le panel mois (comme avant)
   linesCount: number;
 };
-
-const TYPE_DEFAULT: ActivityType = "Non défini";
-
-const PROJECT_GROUPS: { label: string; items: string[] }[] = [
-  {
-    label: "Plateformes",
-    items: ["Technique", "CRM", "AX", "eComm", "ORO", "Okaveo", "SIRH"],
-  },
-  { label: "Projets / Domaines", items: ["Mail relève", "IRMA", "LMS", "IMPU"] },
-  { label: "Absences", items: ["Absent"] },
-];
 
 function uid() {
   return crypto.randomUUID();
 }
 
-// ---- State
 const day = ref<string>(new Date().toISOString().slice(0, 10));
 const text = ref<string>("");
-const projects = ref<string[]>([]); // sert surtout pour aider l'IA (knownProjects)
+const projects = ref<string[]>([]);
 const rows = ref<Row[]>([]);
 const loadingAi = ref<boolean>(false);
 const saving = ref<boolean>(false);
@@ -75,7 +52,6 @@ const msg = ref<string>("");
 const logoutLoading = ref<boolean>(false);
 const me = ref<Me | null>(null);
 
-// ---- Me helpers
 const meLabel = computed(() => {
   if (!me.value) return "";
   return (me.value.full_name?.trim() || me.value.email || "").trim();
@@ -88,27 +64,12 @@ const meRoleLabel = computed(() => {
   return "";
 });
 
-function getMyVsaCode(): string {
-  const m: any = me.value as any;
-  return (
-    (m?.code_vsa ?? "") ||
-    (m?.vsa_code ?? "") ||
-    (m?.impute ?? "") ||
-    (m?.vsa ?? "") ||
-    ""
-  )
-    .toString()
-    .trim();
-}
-
-const myVsaCode = computed(() => getMyVsaCode());
-
-// ---- Month panel
+// ---- Month panel state
 const monthDays = ref<MonthDayItem[]>([]);
 const loadingMonth = ref(false);
 const monthError = ref<string>("");
 
-// ---- Anti-perte
+// Anti-perte
 const lastSavedSnapshot = ref<string>("");
 
 // ---- Day change controller
@@ -155,6 +116,7 @@ const DAY_STEP = 0.25;
 const MAX_DAYS_PER_ROW = 1;
 const HOURS_PER_DAY = 7;
 
+// Options 0 -> 1J par pas de 0.25
 const DAY_OPTIONS = computed(() => {
   const out: number[] = [];
   for (let v = 0; v <= MAX_DAYS_PER_ROW + 1e-9; v += DAY_STEP) {
@@ -170,9 +132,9 @@ function clampToDayStep(x: number) {
   return Math.round(clamped / DAY_STEP) * DAY_STEP;
 }
 
+// clamp heures au quart d’heure (utile si l’API renvoie 1.333 etc)
 const HOUR_STEP = 0.25;
 const MAX_HOURS_PER_ROW = 24;
-
 function clampToHourStep(x: number) {
   const n = Number(x ?? 0);
   if (!Number.isFinite(n)) return 0;
@@ -248,7 +210,10 @@ function isWeekendDate(date: Date) {
 function isCurrentMonthSelected() {
   const selected = new Date(day.value);
   const now = new Date();
-  return selected.getFullYear() === now.getFullYear() && selected.getMonth() === now.getMonth();
+  return (
+    selected.getFullYear() === now.getFullYear() &&
+    selected.getMonth() === now.getMonth()
+  );
 }
 
 // --------------------
@@ -258,16 +223,12 @@ function newEmptyRow(): Row {
   return {
     id: uid(),
     day: day.value,
-
-    id_ticket: "",
     sujet: "",
     projet: "",
-
     temps_passe_h: 0,
     temps_passe_j: 0,
-
-    type: TYPE_DEFAULT,
-    impute: myVsaCode.value || "",
+    type: "Ticket Non défini",
+    impute: "",
   };
 }
 
@@ -312,14 +273,16 @@ async function loadProjects() {
     const { data } = await api.get("/api/projects");
     projects.value = (data?.projects ?? []) as string[];
   } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur chargement projects";
+    msg.value =
+      e?.response?.data?.error || e?.message || "Erreur chargement projects";
   }
 }
 
 // ---- API parsing helpers
 function coerceRows(payload: any): any[] {
   if (payload?.rows && Array.isArray(payload.rows)) return payload.rows;
-  if (payload?.activities && Array.isArray(payload.activities)) return payload.activities;
+  if (payload?.activities && Array.isArray(payload.activities))
+    return payload.activities;
   if (Array.isArray(payload)) return payload;
   return [];
 }
@@ -423,28 +386,6 @@ async function loadMonth() {
   }
 }
 
-function normalizeType(t: any): ActivityType {
-  const raw = (t ?? "").toString().trim();
-  if (!raw) return TYPE_DEFAULT;
-
-  // Backward compat: "Ticket Non défini" -> "Non défini"
-  if (raw === "Ticket Non défini") return "Non défini";
-
-  // Garde si c'est une valeur attendue
-  const allowed: ActivityType[] = [
-    "Evol",
-    "Ano",
-    "Incident Applicatif",
-    "Projet",
-    "Non défini",
-    "Congés",
-    "Week-end",
-  ];
-  if (allowed.includes(raw as ActivityType)) return raw as ActivityType;
-
-  return TYPE_DEFAULT;
-}
-
 async function loadDayFromApi(targetDay: string) {
   msg.value = "";
   try {
@@ -459,16 +400,12 @@ async function loadDayFromApi(targetDay: string) {
       return {
         id: uid(),
         day: targetDay,
-
-        id_ticket: r.id_ticket ?? "",
         sujet: r.sujet ?? "",
         projet: r.projet ?? "",
-
         temps_passe_h: h,
         temps_passe_j: j,
-
-        type: normalizeType(r.type),
-        impute: (r.impute ?? myVsaCode.value ?? "").toString(),
+        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        impute: r.impute ?? "",
       };
     });
 
@@ -479,20 +416,12 @@ async function loadDayFromApi(targetDay: string) {
   }
 }
 
-/**
- * Fingerprint anti-doublons IA
- * ✅ inclut id_ticket + impute pour éviter collisions
- */
-function rowFingerprint(
-  r: Pick<Row, "id_ticket" | "sujet" | "projet" | "temps_passe_j" | "type" | "impute">
-) {
+function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_j" | "type">) {
   return [
-    (r.id_ticket ?? "").trim().toLowerCase(),
     (r.sujet ?? "").trim().toLowerCase(),
     (r.projet ?? "").trim().toLowerCase(),
     String(clampToDayStep(Number(r.temps_passe_j ?? 0))),
-    normalizeType(r.type),
-    (r.impute ?? "").trim(),
+    r.type,
   ].join("|");
 }
 
@@ -519,16 +448,12 @@ async function parseAi() {
       return {
         id: uid(),
         day: day.value,
-
-        id_ticket: r.id_ticket ?? "",
         sujet: r.sujet ?? "",
         projet: r.projet ?? "",
-
         temps_passe_h: h,
         temps_passe_j: j,
-
-        type: normalizeType(r.type),
-        impute: (r.impute ?? myVsaCode.value ?? "").toString(),
+        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        impute: r.impute ?? "",
       };
     });
 
@@ -556,8 +481,6 @@ async function saveDay() {
   msg.value = "";
   saving.value = true;
   try {
-    const vsa = myVsaCode.value || "";
-
     const { data } = await api.post("/api/activities/upsertDay", {
       day: day.value,
       rows: rows.value.map(({ id, ...rest }) => {
@@ -566,10 +489,8 @@ async function saveDay() {
 
         return {
           ...rest,
-          type: normalizeType(rest.type),
-          impute: (rest.impute || vsa || "").toString().trim(), // ✅ verrouillé / auto
-          temps_passe_j: j,
-          temps_passe_h: h,
+          temps_passe_j: j,      // ✅ UI
+          temps_passe_h: h,      // ✅ DB (autorité)
         };
       }),
     });
@@ -632,19 +553,6 @@ async function exportExcel() {
   }
 }
 
-/**
- * ✅ Si le Code VSA arrive après coup (chargement me),
- * on le réinjecte dans les lignes qui n’en ont pas.
- */
-watch(
-  () => myVsaCode.value,
-  (vsa) => {
-    if (!vsa) return;
-    rows.value = rows.value.map((r) => (r.impute ? r : { ...r, impute: vsa }));
-  }
-);
-
-// ---- Mount
 onMounted(async () => {
   await ensureAuthedOrRedirect();
 
@@ -659,6 +567,7 @@ onMounted(async () => {
   await loadDayFromApi(day.value);
 });
 </script>
+
 
 <template>
   <div class="min-h-screen bg-zinc-950 text-zinc-100">
@@ -800,18 +709,13 @@ onMounted(async () => {
                   @change="onDayInputChange"
                   class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
                 />
-
-                <div class="ml-auto text-xs text-zinc-400">
-                  Code VSA :
-                  <span class="font-mono text-zinc-200">{{ myVsaCode || "—" }}</span>
-                </div>
               </div>
 
               <label class="text-sm text-zinc-400">Décris ta journée</label>
               <textarea
                 v-model="text"
                 class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 min-h-[110px] outline-none"
-                placeholder="Ex: Matin incident applicatif (INC12345). Aprem evol AMP lot2. Total 1J."
+                placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 1J."
               />
 
               <div class="flex gap-3 mt-3">
@@ -858,6 +762,7 @@ onMounted(async () => {
                   </button>
                 </div>
 
+                <!-- ✅ Affichage jours + heures en bonus -->
                 <div class="text-zinc-400 text-sm">
                   Total : {{ totalDays.toFixed(2) }}J ({{ totalHours.toFixed(2) }}h)
                 </div>
@@ -867,73 +772,40 @@ onMounted(async () => {
                 <table class="w-full text-sm">
                   <thead class="text-zinc-400">
                     <tr>
-                      <th class="text-left py-2 pr-2">ID Ticket</th>
                       <th class="text-left py-2 pr-2">Sujet</th>
                       <th class="text-left py-2 pr-2">Projet</th>
-                      <th class="text-left py-2 pr-2">Charge réelle (J)</th>
+                      <th class="text-left py-2 pr-2">Temps (J)</th>
                       <th class="text-left py-2 pr-2">Type</th>
-                      <th class="text-left py-2 pr-2">Code VSA</th>
                       <th class="text-right py-2">Actions</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
-                      <!-- ID Ticket -->
-                      <td class="py-2 pr-2">
-                        <input
-                          v-model="r.id_ticket"
-                          class="w-32 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          placeholder="ex: INC12345"
-                        />
-                      </td>
-
-                      <!-- Sujet -->
                       <td class="py-2 pr-2">
                         <input
                           v-model="r.sujet"
-                          class="w-full min-w-[240px] rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          placeholder="Ex: Incident API, Evol AMP lot2..."
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         />
                       </td>
 
-                      <!-- Projet -->
                       <td class="py-2 pr-2">
-                        <select
+                        <input
                           v-model="r.projet"
-                          class="w-full min-w-[180px] rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        >
-                          <option value="">(Non défini)</option>
-
-                          <!-- Valeur custom conservée si elle existe déjà en DB -->
-                          <option
-                            v-if="
-                              r.projet &&
-                              !PROJECT_GROUPS.some((g) => g.items.includes(r.projet))
-                            "
-                            :value="r.projet"
-                          >
-                            Autre : {{ r.projet }}
-                          </option>
-
-                          <optgroup v-for="g in PROJECT_GROUPS" :key="g.label" :label="g.label">
-                            <option v-for="p in g.items" :key="g.label + '-' + p" :value="p">
-                              {{ p }}
-                            </option>
-                          </optgroup>
-                        </select>
-
-                        <!-- Optionnel : aide IA / historique projets -->
-                        <div class="text-[11px] text-zinc-500 mt-1">
-                          Astuce : garde des libellés stables (ça améliore l’export et le reporting).
-                        </div>
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          list="projects"
+                          placeholder="(optionnel)"
+                        />
+                        <datalist id="projects">
+                          <option v-for="p in projects" :key="p" :value="p" />
+                        </datalist>
                       </td>
 
-                      <!-- Charge réelle (J) -->
+                      <!-- ✅ Temps en jours (0, 0.25, 0.5, 0.75, 1) -->
                       <td class="py-2 pr-2">
                         <select
                           v-model.number="r.temps_passe_j"
-                          class="w-32 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          class="w-28 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
                             {{ String(t).replace(".", ",") }} J
@@ -941,7 +813,6 @@ onMounted(async () => {
                         </select>
                       </td>
 
-                      <!-- Type -->
                       <td class="py-2 pr-2">
                         <select
                           v-model="r.type"
@@ -952,7 +823,7 @@ onMounted(async () => {
                             <option value="Ano">Ano</option>
                             <option value="Incident Applicatif">Incident Applicatif</option>
                             <option value="Projet">Projet</option>
-                            <option value="Non défini">Non défini</option>
+                            <option value="Ticket Non défini">Ticket Non défini</option>
                           </optgroup>
 
                           <optgroup label="Absences">
@@ -962,17 +833,6 @@ onMounted(async () => {
                         </select>
                       </td>
 
-                      <!-- Code VSA (verrouillé) -->
-                      <td class="py-2 pr-2">
-                        <input
-                          :value="r.impute || myVsaCode"
-                          disabled
-                          class="w-40 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
-                          title="Champ verrouillé : alimenté automatiquement (Code VSA)"
-                        />
-                      </td>
-
-                      <!-- Actions -->
                       <td class="py-2 text-right whitespace-nowrap">
                         <button
                           @click="duplicateRow(i)"
@@ -996,8 +856,7 @@ onMounted(async () => {
               </div>
 
               <div class="mt-3 text-zinc-500 text-xs">
-                Astuce : mets “Non défini” uniquement si tu n’as vraiment pas l’info — sinon ça dégrade
-                le reporting (et c’est exactement ce que Sitraka cherche à éviter).
+                Astuce : tu peux ajouter, dupliquer ou supprimer des lignes avant de sauvegarder.
               </div>
             </div>
           </div>
