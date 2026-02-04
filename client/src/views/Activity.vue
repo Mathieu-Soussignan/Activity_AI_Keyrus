@@ -865,148 +865,146 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div class="-mx-4 mt-2 overflow-x-auto overflow-y-hidden">
-                <div class="px-4 min-w-full">
-                  <table class="min-w-[1200px] w-max text-sm table-fixed">
-                    <colgroup>
-                      <col class="w-32" />
-                      <col class="w-[22rem]" />
-                      <col class="w-48" />
-                      <col class="w-40" />
-                      <col class="w-44" />
-                      <col class="w-44" />
-                      <col class="w-28" />
-                    </colgroup>
+              <div class="w-full max-w-full overflow-x-auto overflow-y-hidden min-w-0">
+                <table class="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col class="w-32" />
+                    <col class="w-[22rem]" />
+                    <col class="w-48" />
+                    <col class="w-40" />
+                    <col class="w-44" />
+                    <col class="w-44" />
+                    <col class="w-28" />
+                  </colgroup>
 
-                    <thead class="text-zinc-400">
-                      <tr>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Projet</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Type</th>
-                        <th class="text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
-                        <th class="text-right py-2 whitespace-nowrap">Actions</th>
-                      </tr>
-                    </thead>
+                  <thead class="text-zinc-400">
+                    <tr>
+                      <th class="text-left py-2 pr-2">ID Ticket</th>
+                      <th class="text-left py-2 pr-2">Sujet</th>
+                      <th class="text-left py-2 pr-2">Projet</th>
+                      <th class="text-left py-2 pr-2">Charge réelle (J)</th>
+                      <th class="text-left py-2 pr-2">Type</th>
+                      <th class="text-left py-2 pr-2">Code VSA</th>
+                      <th class="text-right py-2">Actions</th>
+                    </tr>
+                  </thead>
 
-                    <tbody>
-                      <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
-                        <!-- ID Ticket -->
-                        <td class="py-2 pr-2 min-w-0">
-                          <input
-                            v-model="r.id_ticket"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
-                            placeholder="ex: INC12345"
-                          />
-                        </td>
+                  <tbody>
+                    <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
+                      <!-- ID Ticket -->
+                      <td class="py-2 pr-2 min-w-0">
+                        <input
+                          v-model="r.id_ticket"
+                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                          placeholder="ex: INC12345"
+                        />
+                      </td>
 
-                        <!-- Sujet -->
-                        <td class="py-2 pr-2 min-w-0">
-                          <input
-                            v-model="r.sujet"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
-                            placeholder="Ex: Incident API, Evol AMP lot2..."
-                          />
-                        </td>
+                      <!-- Sujet -->
+                      <td class="py-2 pr-2 min-w-0">
+                        <input
+                          v-model="r.sujet"
+                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                          placeholder="Ex: Incident API, Evol AMP lot2..."
+                        />
+                      </td>
 
-                        <!-- Projet -->
-                        <td class="py-2 pr-2 min-w-0">
-                          <select
-                            v-model="r.projet"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                      <!-- Projet -->
+                      <td class="py-2 pr-2 min-w-0">
+                        <select
+                          v-model="r.projet"
+                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                        >
+                          <option value="">(Non défini)</option>
+
+                          <option
+                            v-if="r.projet && !PROJECT_GROUPS.some((g) => g.items.includes(r.projet))"
+                            :value="r.projet"
                           >
-                            <option value="">(Non défini)</option>
+                            Autre : {{ r.projet }}
+                          </option>
 
-                            <option
-                              v-if="r.projet && !PROJECT_GROUPS.some((g) => g.items.includes(r.projet))"
-                              :value="r.projet"
-                            >
-                              Autre : {{ r.projet }}
+                          <optgroup v-for="g in PROJECT_GROUPS" :key="g.label" :label="g.label">
+                            <option v-for="p in g.items" :key="g.label + '-' + p" :value="p">
+                              {{ p }}
                             </option>
+                          </optgroup>
+                        </select>
 
-                            <optgroup v-for="g in PROJECT_GROUPS" :key="g.label" :label="g.label">
-                              <option v-for="p in g.items" :key="g.label + '-' + p" :value="p">
-                                {{ p }}
-                              </option>
-                            </optgroup>
-                          </select>
+                        <div class="text-[11px] text-zinc-500 mt-1">
+                          Astuce : garde des libellés stables (ça améliore l’export et le reporting).
+                        </div>
+                      </td>
 
-                          <div class="text-[11px] text-zinc-500 mt-1">
-                            Astuce : garde des libellés stables (ça améliore l’export et le reporting).
-                          </div>
-                        </td>
+                      <!-- Charge réelle (J) -->
+                      <td class="py-2 pr-2">
+                        <select
+                          v-model.number="r.temps_passe_j"
+                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                        >
+                          <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
+                            {{ String(t).replace(".", ",") }} J
+                          </option>
+                        </select>
+                      </td>
 
-                        <!-- Charge réelle (J) -->
-                        <td class="py-2 pr-2">
-                          <select
-                            v-model.number="r.temps_passe_j"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          >
-                            <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
-                              {{ String(t).replace(".", ",") }} J
-                            </option>
-                          </select>
-                        </td>
+                      <!-- Type -->
+                      <td class="py-2 pr-2">
+                        <select
+                          v-model="r.type"
+                          class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                        >
+                          <optgroup label="Tickets">
+                            <option value="Evol">Evol</option>
+                            <option value="Ano">Ano</option>
+                            <option value="Incident Applicatif">Incident Applicatif</option>
+                            <option value="Projet">Projet</option>
+                            <option value="Non défini">Non défini</option>
+                          </optgroup>
 
-                        <!-- Type -->
-                        <td class="py-2 pr-2">
-                          <select
-                            v-model="r.type"
-                            class="w-full min-w-0 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          >
-                            <optgroup label="Tickets">
-                              <option value="Evol">Evol</option>
-                              <option value="Ano">Ano</option>
-                              <option value="Incident Applicatif">Incident Applicatif</option>
-                              <option value="Projet">Projet</option>
-                              <option value="Non défini">Non défini</option>
-                            </optgroup>
+                          <optgroup label="Absences">
+                            <option value="Congés">Congés</option>
+                            <option value="Week-end">Week-end</option>
+                          </optgroup>
+                        </select>
+                      </td>
 
-                            <optgroup label="Absences">
-                              <option value="Congés">Congés</option>
-                              <option value="Week-end">Week-end</option>
-                            </optgroup>
-                          </select>
-                        </td>
+                      <!-- Code VSA (verrouillé) -->
+                      <td class="py-2 pr-2">
+                        <input
+                          :value="r.impute || myVsaCode"
+                          disabled
+                          class="w-full min-w-0 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
+                          title="Champ verrouillé : alimenté automatiquement (Code VSA)"
+                        />
+                      </td>
 
-                        <!-- Code VSA (verrouillé) -->
-                        <td class="py-2 pr-2">
-                          <input
-                            :value="r.impute || myVsaCode"
-                            disabled
-                            class="w-full min-w-0 rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
-                            title="Champ verrouillé : alimenté automatiquement (Code VSA)"
-                          />
-                        </td>
+                      <!-- Actions -->
+                      <td class="py-2 text-right whitespace-nowrap">
+                        <button
+                          @click="duplicateRow(i)"
+                          class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900 mr-2"
+                          title="Dupliquer"
+                        >
+                          📄
+                        </button>
 
-                        <!-- Actions -->
-                        <td class="py-2 text-right whitespace-nowrap">
-                          <button
-                            @click="duplicateRow(i)"
-                            class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900 mr-2"
-                            title="Dupliquer"
-                          >
-                            📄
-                          </button>
-
-                          <button
-                            @click="removeRow(i)"
-                            class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900"
-                            title="Supprimer"
-                          >
-                            🗑️
-                          </button>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                        <button
+                          @click="removeRow(i)"
+                          class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900"
+                          title="Supprimer"
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
 
               <div class="mt-3 text-zinc-500 text-xs">
                 Astuce : mets “Non défini” uniquement si tu n’as vraiment pas l’info — sinon ça dégrade
-                le reporting.
+                le reporting (et c’est exactement ce que Sitraka cherche à éviter).
               </div>
             </div>
           </div>
