@@ -12,19 +12,29 @@ type ActivityType =
   | "Ano"
   | "Incident Applicatif"
   | "Projet"
-  | "Ticket Non défini"
+  | "Non défini"
   | "Congés"
   | "Week-end";
+
+const PROJECT_GROUPS = [
+  { label: "Plateformes", items: ["Technique", "CRM", "AX", "eComm", "ORO", "Okaveo", "SIRH"] },
+  { label: "Projets / Domaines", items: ["Mail relève", "IRMA", "LMS", "IMPU"] },
+  { label: "Absences", items: ["Absent"] },
+] as const;
 
 type Row = {
   id: string;
   day: string;
+
+  id_ticket: string;
   sujet: string;
   projet: string;
-  temps_passe_h: number; // toujours en heures côté DB/API
-  temps_passe_j: number; // affichage UI en jours
+
+  temps_passe_h: number;
+  temps_passe_j: number;
+
   type: ActivityType;
-  impute: string;
+  impute: string; // Code VSA
 };
 
 type MonthDayStatus = "weekend" | "filled" | "empty";
@@ -223,11 +233,12 @@ function newEmptyRow(): Row {
   return {
     id: uid(),
     day: day.value,
+    id_ticket: "",
     sujet: "",
     projet: "",
     temps_passe_h: 0,
     temps_passe_j: 0,
-    type: "Ticket Non défini",
+    type: "Non défini",
     impute: "",
   };
 }
@@ -392,6 +403,7 @@ async function loadDayFromApi(targetDay: string) {
     const { data } = await api.get("/api/activities/day", { params: { day: targetDay } });
 
     rows.value = coerceRows(data).map((r: any) => {
+      const id_ticket = r.id_ticket ?? "";
       const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
       const j = clampToDayStep(
         Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
@@ -400,11 +412,12 @@ async function loadDayFromApi(targetDay: string) {
       return {
         id: uid(),
         day: targetDay,
+        id_ticket,
         sujet: r.sujet ?? "",
         projet: r.projet ?? "",
         temps_passe_h: h,
         temps_passe_j: j,
-        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        type: (r.type ?? "Non défini") as ActivityType,
         impute: r.impute ?? "",
       };
     });
@@ -440,6 +453,7 @@ async function parseAi() {
     const generatedRaw = (data?.rows ?? []) as any[];
 
     const generated: Row[] = generatedRaw.map((r) => {
+      const id_ticket = r.id_ticket ?? "";
       const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
       const j = clampToDayStep(
         Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
@@ -448,11 +462,12 @@ async function parseAi() {
       return {
         id: uid(),
         day: day.value,
+        id_ticket,
         sujet: r.sujet ?? "",
         projet: r.projet ?? "",
         temps_passe_h: h,
         temps_passe_j: j,
-        type: (r.type ?? "Ticket Non défini") as ActivityType,
+        type: (r.type ?? "Non défini") as ActivityType,
         impute: r.impute ?? "",
       };
     });
@@ -762,50 +777,73 @@ onMounted(async () => {
                   </button>
                 </div>
 
-                <!-- ✅ Affichage jours + heures en bonus -->
                 <div class="text-zinc-400 text-sm">
                   Total : {{ totalDays.toFixed(2) }}J ({{ totalHours.toFixed(2) }}h)
                 </div>
               </div>
 
               <div class="overflow-auto">
-                <table class="w-full text-sm">
+                <!-- ✅ Version Excel-like : attend que Row contienne id_ticket + impute + day -->
+                <table class="w-full text-sm table-fixed">
                   <thead class="text-zinc-400">
                     <tr>
-                      <th class="text-left py-2 pr-2">Sujet</th>
-                      <th class="text-left py-2 pr-2">Projet</th>
-                      <th class="text-left py-2 pr-2">Temps (J)</th>
-                      <th class="text-left py-2 pr-2">Type</th>
-                      <th class="text-right py-2">Actions</th>
+                      <th class="w-28 text-left py-2 pr-2 whitespace-nowrap">Date</th>
+                      <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
+                      <th class="w-[20rem] text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
+                      <th class="w-48 text-left py-2 pr-2 whitespace-nowrap">Projet</th>
+                      <th class="w-40 text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
+                      <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Type</th>
+                      <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
+                      <th class="w-28 text-right py-2 whitespace-nowrap">Actions</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
+                      <!-- Date -->
+                      <td class="py-2 pr-2 whitespace-nowrap">
+                        <span class="text-[11px] font-mono text-zinc-400">{{ r.day }}</span>
+                      </td>
+
+                      <!-- ID Ticket -->
+                      <td class="py-2 pr-2">
+                        <input
+                          v-model="r.id_ticket"
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          placeholder="ex: INC12345"
+                        />
+                      </td>
+
+                      <!-- Sujet -->
                       <td class="py-2 pr-2">
                         <input
                           v-model="r.sujet"
                           class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          placeholder="Ex: Incident API, Evol AMP lot2..."
                         />
                       </td>
 
+                      <!-- Projet (optgroups) -->
                       <td class="py-2 pr-2">
-                        <input
+                        <select
                           v-model="r.projet"
                           class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          list="projects"
-                          placeholder="(optionnel)"
-                        />
-                        <datalist id="projects">
-                          <option v-for="p in projects" :key="p" :value="p" />
-                        </datalist>
+                        >
+                          <option value="">(Non défini)</option>
+
+                          <optgroup v-for="g in PROJECT_GROUPS" :key="g.label" :label="g.label">
+                            <option v-for="p in g.items" :key="g.label + '-' + p" :value="p">
+                              {{ p }}
+                            </option>
+                          </optgroup>
+                        </select>
                       </td>
 
-                      <!-- ✅ Temps en jours (0, 0.25, 0.5, 0.75, 1) -->
+                      <!-- Temps -->
                       <td class="py-2 pr-2">
                         <select
                           v-model.number="r.temps_passe_j"
-                          class="w-28 rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
                             {{ String(t).replace(".", ",") }} J
@@ -813,17 +851,18 @@ onMounted(async () => {
                         </select>
                       </td>
 
+                      <!-- Type -->
                       <td class="py-2 pr-2">
                         <select
                           v-model="r.type"
-                          class="rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
+                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
                         >
                           <optgroup label="Tickets">
                             <option value="Evol">Evol</option>
                             <option value="Ano">Ano</option>
                             <option value="Incident Applicatif">Incident Applicatif</option>
                             <option value="Projet">Projet</option>
-                            <option value="Ticket Non défini">Ticket Non défini</option>
+                            <option value="Non défini">Non défini</option>
                           </optgroup>
 
                           <optgroup label="Absences">
@@ -833,6 +872,17 @@ onMounted(async () => {
                         </select>
                       </td>
 
+                      <!-- Code VSA (verrouillé) -->
+                      <td class="py-2 pr-2">
+                        <input
+                          :value="r.impute"
+                          disabled
+                          class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
+                          title="Ne pas modifier (Code VSA)"
+                        />
+                      </td>
+
+                      <!-- Actions -->
                       <td class="py-2 text-right whitespace-nowrap">
                         <button
                           @click="duplicateRow(i)"
@@ -856,7 +906,7 @@ onMounted(async () => {
               </div>
 
               <div class="mt-3 text-zinc-500 text-xs">
-                Astuce : tu peux ajouter, dupliquer ou supprimer des lignes avant de sauvegarder.
+                Astuce : mets “Non défini” uniquement si tu n’as vraiment pas l’info — sinon ça dégrade le reporting.
               </div>
             </div>
           </div>
