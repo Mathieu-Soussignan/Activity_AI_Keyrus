@@ -14,6 +14,7 @@ type ActivityType =
   | "Projet"
   | "Non défini"
   | "Congés"
+  | "Alternance"
   | "Week-end";
 
 const PROJECT_GROUPS = [

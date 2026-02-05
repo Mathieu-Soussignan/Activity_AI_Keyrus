@@ -206,6 +206,14 @@ function normalizeType(v) {
     cp: "Congés",
     vacances: "Congés",
 
+    // ----- Alternance
+    alternance: "Alternance",
+    ecole: "Alternance",
+    cfa: "Alternance",
+    cours: "Alternance",
+    formation: "Alternance",    // si le LLM dit “formation”
+    "formation ia": "Alternance",
+
     // ----- Week-end
     weekend: "Week-end",
     "week end": "Week-end",
@@ -240,6 +248,7 @@ const RowInputSchema = z.object({
       "Support",
       "Projet",
       "Congés",
+      "Alternance",
       "Week-end",
       "Autre",
       "Evol",
