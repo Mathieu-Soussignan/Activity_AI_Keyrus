@@ -867,6 +867,7 @@ onMounted(async () => {
 
                           <optgroup label="Absences">
                             <option value="Congés">Congés</option>
+                            <option value="Alternance">Alternance</option>
                             <option value="Week-end">Week-end</option>
                           </optgroup>
                         </select>
