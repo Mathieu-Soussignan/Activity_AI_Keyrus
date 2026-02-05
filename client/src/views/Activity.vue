@@ -504,8 +504,8 @@ async function saveDay() {
 
         return {
           ...rest,
-          temps_passe_j: j,      // ✅ UI
-          temps_passe_h: h,      // ✅ DB (autorité)
+          temps_passe_j: j,      // UI
+          temps_passe_h: h,      // DB (autorité)
         };
       }),
     });

@@ -112,6 +112,13 @@ function mistralContentToText(content) {
 
 /**
  * ---------------------------
+ * Hours per day (max)
+ * ---------------------------
+ */
+const HOURS_PER_DAY = 7;
+
+/**
+ * ---------------------------
  * Activity types (ALIGN with Supabase enum)
  * Supabase enum currently: Travail, Réunion, Support, Congés, Week-end, Autre
  * ---------------------------
@@ -304,6 +311,59 @@ app.get("/api/me", async (req, res) => {
  * Auth required
  * Returns rows for that day (no DB write here)
  */
+
+// util interne pour s'assurer que la somme des temps <= 7h
+function capRowsToOneDay(rows, maxHours = HOURS_PER_DAY) {
+  // nettoie et force les nombres positifs
+  const cleaned = rows.map((r) => ({
+    ...r,
+    temps_passe_h: Math.max(0, Number(r.temps_passe_h || 0)),
+  }));
+
+  const total = cleaned.reduce((acc, r) => acc + r.temps_passe_h, 0);
+
+  if (total <= maxHours || total === 0) return cleaned;
+
+  const factor = maxHours / total;
+
+  let scaled = cleaned.map((r) => ({
+    ...r,
+    temps_passe_h: Math.round(r.temps_passe_h * factor * 100) / 100, // 2 décimales
+  }));
+
+  // correction de l'arrondi pour coller exactement à maxHours
+  const total2 = scaled.reduce((acc, r) => acc + r.temps_passe_h, 0);
+  let delta = Math.round((maxHours - total2) * 100) / 100;
+
+  if (delta !== 0 && scaled.length > 0) {
+    // on ajuste la plus grosse ligne
+    let idx = 0;
+    for (let i = 1; i < scaled.length; i++) {
+      if (scaled[i].temps_passe_h > scaled[idx].temps_passe_h) idx = i;
+    }
+    scaled[idx].temps_passe_h = Math.max(
+      0,
+      Math.round((scaled[idx].temps_passe_h + delta) * 100) / 100
+    );
+  }
+
+  // sécurité finale : ne jamais dépasser maxHours
+  const finalTotal = scaled.reduce((acc, r) => acc + r.temps_passe_h, 0);
+  if (finalTotal > maxHours && scaled.length > 0) {
+    const over = Math.round((finalTotal - maxHours) * 100) / 100;
+    let idx = 0;
+    for (let i = 1; i < scaled.length; i++) {
+      if (scaled[i].temps_passe_h > scaled[idx].temps_passe_h) idx = i;
+    }
+    scaled[idx].temps_passe_h = Math.max(
+      0,
+      Math.round((scaled[idx].temps_passe_h - over) * 100) / 100
+    );
+  }
+
+  return scaled;
+}
+
 app.post("/api/ai/parse", async (req, res) => {
   try {
     const auth = await getUserFromBearer(req);
@@ -338,8 +398,11 @@ Règles:
 - Types autorisés STRICTS: ${JSON.stringify(ActivityType)}
 - Si week-end ou congés -> type "Week-end" ou "Congés", temps_passe_h = 0 et sujet "Week-end"/"Congés".
 - Si type non clair -> "Autre".
-- Projet: choisis au plus proche dans cette liste si pertinent: ${JSON.stringify(knownProjects)}
-- Si manque temps total -> mets 7h par défaut réparties (ex: 3.5 + 3.5) si plusieurs lignes, sinon 7h sur une ligne.
+- Projet: choisis au plus proche dans cette liste si pertinent: ${JSON.stringify(
+      knownProjects
+    )}
+- La SOMME de tous les "temps_passe_h" pour la journée DOIT être <= 7 (heures).
+- Si manque temps total -> répartis AU MAXIMUM 7h (par ex: 3.5 + 3.5) si plusieurs lignes, sinon 7h sur une ligne.
 - La réponse DOIT commencer par { et finir par }.
 `;
 
@@ -377,17 +440,15 @@ Règles:
       })
     );
 
-    return res.json({ rows: validated });
+    // Cap dur à 7h max pour la journée
+    const capped = capRowsToOneDay(validated, HOURS_PER_DAY);
+
+    return res.json({ rows: capped });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
 });
 
-/**
- * POST /api/activities/upsertDay
- * Replaces the whole day (delete then insert)
- * Auth required
- */
 app.post("/api/activities/upsertDay", async (req, res) => {
   try {
     const auth = await getUserFromBearer(req);
@@ -396,10 +457,26 @@ app.post("/api/activities/upsertDay", async (req, res) => {
     const { user, jwt } = auth;
     const supabaseUser = supabaseForJwt(jwt);
 
-    const schema = z.object({
-      day: z.string().min(10),
-      rows: z.array(RowInputSchema),
-    });
+    const schema = z
+      .object({
+        day: z.string().min(10),
+        rows: z.array(RowInputSchema),
+      })
+      .superRefine((val, ctx) => {
+        const total = (val.rows ?? []).reduce(
+          (acc, r) => acc + Number(r?.temps_passe_h ?? 0),
+          0
+        );
+
+        if (total > HOURS_PER_DAY + 1e-9) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Total journée > ${HOURS_PER_DAY}h interdit (reçu: ${Math.round(total * 100) / 100}h).`,
+            path: ["rows"],
+          });
+        }
+      });
+
     const body = schema.parse(req.body);
 
     // Delete existing activities for that day (as user)
@@ -418,6 +495,7 @@ app.post("/api/activities/upsertDay", async (req, res) => {
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
       type: r.type ?? "Autre",
+      // impute volontairement absent (PM only)
     }));
 
     const { data, error } = await supabaseUser
@@ -436,7 +514,7 @@ app.post("/api/activities/upsertDay", async (req, res) => {
 /**
  * POST /api/activities/appendDay
  * Adds rows for a day WITHOUT deleting existing ones.
- * (Useful if you ever want "add" semantics; typically Save should remain upsert.)
+ * Auth required
  */
 app.post("/api/activities/appendDay", async (req, res) => {
   try {
@@ -446,12 +524,58 @@ app.post("/api/activities/appendDay", async (req, res) => {
     const { user, jwt } = auth;
     const supabaseUser = supabaseForJwt(jwt);
 
-    const schema = z.object({
-      day: z.string().min(10),
-      rows: z.array(RowInputSchema),
-    });
+    // 1) parse input + check sum(rows) <= 7 (au moins)
+    const schema = z
+      .object({
+        day: z.string().min(10),
+        rows: z.array(RowInputSchema).min(1),
+      })
+      .superRefine((val, ctx) => {
+        const added = (val.rows ?? []).reduce(
+          (acc, r) => acc + Number(r?.temps_passe_h ?? 0),
+          0
+        );
+
+        if (added > HOURS_PER_DAY + 1e-9) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Ajout > ${HOURS_PER_DAY}h interdit (reçu: ${Math.round(added * 100) / 100}h).`,
+            path: ["rows"],
+          });
+        }
+      });
+
     const body = schema.parse(req.body);
 
+    // 2) calcule le total déjà existant sur ce jour (DB)
+    const { data: existing, error: exErr } = await supabaseUser
+      .from("activities")
+      .select("temps_passe_h")
+      .eq("user_id", user.id)
+      .eq("day", body.day);
+
+    if (exErr) throw new Error(exErr.message);
+
+    const existingTotal = (existing ?? []).reduce(
+      (acc, r) => acc + Number(r?.temps_passe_h ?? 0),
+      0
+    );
+
+    // 3) calcule le total ajouté
+    const addedTotal = body.rows.reduce(
+      (acc, r) => acc + Number(r?.temps_passe_h ?? 0),
+      0
+    );
+
+    const finalTotal = existingTotal + addedTotal;
+
+    if (finalTotal > HOURS_PER_DAY + 1e-9) {
+      return res.status(400).json({
+        error: `Total journée > ${HOURS_PER_DAY}h interdit (existant: ${Math.round(existingTotal * 100) / 100}h, ajout: ${Math.round(addedTotal * 100) / 100}h).`,
+      });
+    }
+
+    // 4) insert (impute absent : PM-only)
     const payload = body.rows.map((r) => ({
       user_id: user.id,
       day: body.day,
@@ -480,7 +604,21 @@ app.post("/api/activities/appendDay", async (req, res) => {
 const UpsertForUserSchema = z.object({
   userId: z.string().min(1),
   day: z.string().min(10),
-  rows: z.array(RowInputSchema),
+  rows: z.array(RowInputSchema).min(1),
+});
+
+const UpsertForUserSchemaWithLimit = UpsertForUserSchema.superRefine((val, ctx) => {
+  const total = (val.rows ?? []).reduce(
+    (acc, r) => acc + Number(r?.temps_passe_h ?? 0),
+    0
+  );
+  if (total > HOURS_PER_DAY + 1e-9) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Total journée > ${HOURS_PER_DAY}h interdit (reçu: ${Math.round(total * 100) / 100}h).`,
+      path: ["rows"],
+    });
+  }
 });
 
 app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
@@ -492,16 +630,14 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
     const prof = await getRole(user.id);
     if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
 
-    const body = UpsertForUserSchema.parse(req.body);
+    const body = UpsertForUserSchemaWithLimit.parse(req.body);
     const supabaseUser = supabaseForJwt(jwt);
 
-    // delete existing for that user/day
     const { error: dErr } = await supabaseUser
       .from("activities")
       .delete()
       .eq("user_id", body.userId)
       .eq("day", body.day);
-
     if (dErr) throw new Error(dErr.message);
 
     const payload = body.rows.map((r) => ({
@@ -514,11 +650,7 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
       impute: r.impute ?? "",
     }));
 
-    const { data, error } = await supabaseUser
-      .from("activities")
-      .insert(payload)
-      .select();
-
+    const { data, error } = await supabaseUser.from("activities").insert(payload).select();
     if (error) throw new Error(error.message);
 
     return res.json({ ok: true, inserted: data?.length ?? 0 });
@@ -631,8 +763,6 @@ function startEndOfMonth(year, month1to12) {
   const endStr = end.toISOString().slice(0, 10);
   return { startStr, endStr };
 }
-
-const HOURS_PER_DAY = 7;
 
 function computeMonthlySummaryStats({
   activities,

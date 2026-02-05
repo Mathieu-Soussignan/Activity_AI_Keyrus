@@ -63,7 +63,7 @@ async function submit() {
     if (error) throw error;
 
     success.value =
-      "✅ Inscription OK. Vérifie ta boîte mail (validation) si Supabase l’exige.";
+      "✅ Inscription OK. Tu peux maintenant te connecter.";
   } catch (e: any) {
     msg.value = e?.message || "Erreur.";
   } finally {
@@ -101,7 +101,7 @@ async function sendResetEmail() {
 <template>
   <div class="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
     <div class="w-full max-w-md rounded-2xl bg-zinc-900/60 border border-zinc-800 p-6">
-      <h1 class="text-2xl font-semibold">Keyrus · AI-Augmented Activity Tracking</h1>
+      <h1 class="text-2xl font-semibold">Keyrus Suivi d’activité</h1>
       <p class="text-sm text-zinc-400 mt-1">Connexion / Inscription équipe</p>
 
       <!-- Tabs -->

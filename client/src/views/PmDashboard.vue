@@ -86,7 +86,6 @@ const activities = ref<ActivityLine[]>([]);
 const savingVsa = ref(false);
 const vsaMsg = ref("");
 
-// ---- Guards
 async function ensurePm() {
   const { data } = await supabase.auth.getSession();
   if (!data?.session) {
@@ -444,7 +443,7 @@ onMounted(async () => {
         <p v-if="msg" class="mt-3 text-sm text-red-200">{{ msg }}</p>
       </div>
 
-      <!-- ✅ NEW : sélection dev + lignes + Code VSA -->
+      <!-- sélection dev + lignes + Code VSA -->
       <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 mb-4 min-w-0">
         <div class="flex flex-wrap items-end gap-3">
           <div class="min-w-[260px]">
@@ -558,7 +557,7 @@ onMounted(async () => {
                   />
                 </td>
 
-                <!-- ✅ seul champ éditable côté PM -->
+                <!-- seul champ éditable côté PM -->
                 <td class="py-2 pr-2">
                   <input
                     v-model="a.impute"
