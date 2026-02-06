@@ -499,12 +499,13 @@ async function saveDay() {
   try {
     const { data } = await api.post("/api/activities/upsertDay", {
       day: day.value,
-      rows: rows.value.map(({ id, ...rest }) => {
+      rows: rows.value.map(({ id, id_ticket, ...rest }) => {
         const j = clampToDayStep(Number(rest.temps_passe_j ?? 0));
         const h = jToH(j);
 
         return {
           ...rest,
+          id_ticket: String(id_ticket ?? "").trim(),
           temps_passe_j: j,      // UI
           temps_passe_h: h,      // DB (autorité)
         };
@@ -653,7 +654,7 @@ onMounted(async () => {
                 class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
                 title="Exporter le mois affiché"
               >
-                Export Excel
+                Export Excel/CSV
               </button>
               <div v-if="exportHint" class="text-[11px] text-amber-300/80">
                 {{ exportHint }}
