@@ -246,6 +246,7 @@ function normalizeType(v) {
 
 // Row input coming from client (without day)
 const RowInputSchema = z.object({
+  id_ticket: z.string().default(""),
   sujet: z.string().default(""),
   projet: z.string().default(""),
   temps_passe_h: z.coerce.number().min(0).max(24).default(0),
@@ -509,6 +510,7 @@ app.post("/api/activities/upsertDay", async (req, res) => {
     const payload = body.rows.map((r) => ({
       user_id: user.id,
       day: body.day,
+      id_ticket: r.id_ticket ?? "",
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
@@ -661,6 +663,7 @@ app.post("/api/pm/activities/upsertDayForUser", async (req, res) => {
     const payload = body.rows.map((r) => ({
       user_id: body.userId,
       day: body.day,
+      id_ticket: r.id_ticket ?? "",
       sujet: r.sujet ?? "",
       projet: r.projet ?? "",
       temps_passe_h: r.temps_passe_h ?? 0,
@@ -761,7 +764,7 @@ app.get("/api/activities/day", async (req, res) => {
 
     const { data, error } = await supabaseUser
       .from("activities")
-      .select("day, sujet, projet, temps_passe_h, type, impute")
+      .select("day, id_ticket, sujet, projet, temps_passe_h, type, impute")
       .eq("user_id", user.id)
       .eq("day", q.day)
       .order("id", { ascending: true });
@@ -1235,7 +1238,7 @@ app.get("/api/pm/activities", async (req, res) => {
 
     const { data, error } = await supabaseUser
       .from("activities")
-      .select("id, user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .select("id, user_id, day, id_ticket, sujet, projet, temps_passe_h, type, impute")
       .eq("user_id", q.userId)
       .gte("day", q.from)
       .lte("day", q.to)
