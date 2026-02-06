@@ -65,6 +65,21 @@ const msg = ref("");
 const users = ref<UserStat[]>([]);
 const me = ref<Me | null>(null);
 
+/** URL de base de l'ADO pour les tickets */
+const ADO_BASE = "https://scp-tma-flux.visualstudio.com";
+const ADO_PROJECT = "Gestion des tickets";
+
+/**
+ * Retourne l'URL de l'item de travail ADO correspondant à l'ID de ticket.
+ * param idTicket L'ID de ticket ADO.
+ * returns L'URL de l'item de travail ADO, ou null si l'ID est invalide.
+ */
+function adoWorkItemUrl(idTicket: string) {
+  const id = String(idTicket ?? "").trim();
+  if (!/^\d+$/.test(id)) return null;
+  return `${ADO_BASE}/${encodeURIComponent(ADO_PROJECT)}/_workitems/edit/${id}/`;
+}
+
 // ---- Monthly summary (PM)
 const summaryLoading = ref(false);
 const summaryError = ref("");
@@ -550,8 +565,20 @@ onMounted(async () => {
                 </td>
 
                 <td class="py-2 pr-2">
+                  <a
+                    v-if="adoWorkItemUrl(a.id_ticket)"
+                    :href="adoWorkItemUrl(a.id_ticket)!"
+                    target="_blank"
+                    rel="noopener"
+                    class="block w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 text-zinc-300 hover:border-zinc-600"
+                    :title="adoWorkItemUrl(a.id_ticket)!"
+                  >
+                    {{ a.id_ticket }}
+                  </a>
+
                   <input
-                    :value="a.type"
+                    v-else
+                    :value="a.id_ticket"
                     class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 text-zinc-300"
                     disabled
                   />

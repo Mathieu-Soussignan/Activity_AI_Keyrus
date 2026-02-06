@@ -110,6 +110,15 @@ function mistralContentToText(content) {
   return "";
 }
 
+const ADO_BASE_URL = process.env.ADO_BASE_URL || "https://scp-tma-flux.visualstudio.com";
+const ADO_PROJECT_NAME = process.env.ADO_PROJECT_NAME || "Gestion des tickets";
+
+function adoWorkItemUrl(idTicket) {
+  const id = String(idTicket ?? "").trim();
+  if (!/^\d+$/.test(id)) return ""; // si vide ou non-numérique
+  return `${ADO_BASE_URL}/${encodeURIComponent(ADO_PROJECT_NAME)}/_workitems/edit/${id}/`;
+}
+
 /**
  * ---------------------------
  * Hours per day (max)
@@ -936,7 +945,7 @@ app.get("/api/activities/export", async (req, res) => {
 
     const { data, error } = await supabaseUser
       .from("activities")
-      .select("day, sujet, projet, temps_passe_h, type, impute")
+      .select("day, id_ticket, sujet, projet, temps_passe_h, type, impute")
       .eq("user_id", user.id)
       .gte("day", startStr)
       .lte("day", endStr)
@@ -944,7 +953,7 @@ app.get("/api/activities/export", async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    const header = "day;sujet;projet;temps_passe_h;type;impute";
+    const header = "day;id_ticket;sujet;projet;temps_passe_h;type;impute";
     function sanitizeCsvCell(v) {
       let s = String(v ?? "")
         .replaceAll(";", ",")
@@ -955,7 +964,7 @@ app.get("/api/activities/export", async (req, res) => {
       return s;
     }
     const lines = (data ?? []).map((r) =>
-      [r.day, r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
+      [r.day, r.id_ticket, adoWorkItemUrl(r.id_ticket), r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
         .map((v) =>
           String(v ?? "")
             .replaceAll(";", ",")
@@ -1276,7 +1285,7 @@ app.get("/api/pm/export-range", async (req, res) => {
     // activities range
     let actsQ = supabaseUser
       .from("activities")
-      .select("user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .select("user_id, day, id_ticket, sujet, projet, temps_passe_h, type, impute")
       .gte("day", q.from)
       .lte("day", q.to)
       .order("user_id", { ascending: true })
@@ -1299,13 +1308,15 @@ app.get("/api/pm/export-range", async (req, res) => {
       return s;
     }
 
-    const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
+    const header = "full_name;user_id;day;id_ticket;sujet;projet;temps_passe_h;type;impute";
     const lines = (acts ?? []).map((r) => {
       const fullName = nameById.get(r.user_id) ?? r.user_id;
       return [
         fullName,
         r.user_id,
         r.day,
+        r.id_ticket,
+        adoWorkItemUrl(r.id_ticket),
         r.sujet,
         r.projet,
         r.temps_passe_h,
@@ -1368,7 +1379,7 @@ app.get("/api/pm/export", async (req, res) => {
     // 2) Activities du mois (tous users)
     const { data: acts, error: aErr } = await supabaseUser
       .from("activities")
-      .select("user_id, day, sujet, projet, temps_passe_h, type, impute")
+      .select("user_id, day, id_ticket, sujet, projet, temps_passe_h, type, impute")
       .gte("day", startStr)
       .lte("day", endStr)
       .order("user_id", { ascending: true })
@@ -1377,7 +1388,7 @@ app.get("/api/pm/export", async (req, res) => {
     if (aErr) throw new Error(aErr.message);
 
     // 3) CSV
-    const header = "full_name;user_id;day;sujet;projet;temps_passe_h;type;impute";
+    const header = "full_name;user_id;day;id_ticket;sujet;projet;temps_passe_h;type;impute";
     function sanitizeCsvCell(v) {
       let s = String(v ?? "")
         .replaceAll(";", ",")
@@ -1394,6 +1405,8 @@ app.get("/api/pm/export", async (req, res) => {
         fullName,
         r.user_id,
         r.day,
+        r.id_ticket,
+        adoWorkItemUrl(r.id_ticket),
         r.sujet,
         r.projet,
         r.temps_passe_h,
