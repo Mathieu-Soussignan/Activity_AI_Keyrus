@@ -544,7 +544,7 @@ const exportHint = computed(() => {
   return "⚠️ Mois en cours : l’export est possible même si tout n’est pas rempli.";
 });
 
-async function exportExcel() {
+async function exportCsv() {
   msg.value = "";
   try {
     const d = new Date(day.value);
@@ -566,7 +566,35 @@ async function exportExcel() {
 
     window.URL.revokeObjectURL(url);
   } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur export";
+    msg.value = e?.response?.data?.error || e?.message || "Erreur export CSV";
+  }
+}
+
+async function exportXlsx() {
+  msg.value = "";
+  try {
+    const d = new Date(day.value);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+
+    const resp = await api.get("/api/activities/export-xlsx", {
+      params: { year, month },
+      responseType: "blob",
+    });
+
+    const blob = new Blob([resp.data], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `activities_${year}-${String(month).padStart(2, "0")}.xlsx`;
+    a.click();
+
+    window.URL.revokeObjectURL(url);
+  } catch (e: any) {
+    msg.value = e?.response?.data?.error || e?.message || "Erreur export Excel";
   }
 }
 
@@ -647,15 +675,27 @@ onMounted(async () => {
               </p>
             </div>
 
-            <div class="flex flex-col items-end gap-1">
-              <button
-                @click="exportExcel"
-                :disabled="!canExport"
-                class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
-                title="Exporter le mois affiché"
-              >
-                Export Excel/CSV
-              </button>
+            <div class="flex flex-col items-end gap-2">
+              <div class="flex gap-2">
+                <button
+                  @click="exportCsv"
+                  :disabled="!canExport"
+                  class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
+                  title="Exporter le mois affiché (CSV)"
+                >
+                  Export CSV
+                </button>
+
+                <button
+                  @click="exportXlsx"
+                  :disabled="!canExport"
+                  class="rounded-xl bg-emerald-400 text-zinc-950 px-3 py-2 text-sm font-medium disabled:opacity-50"
+                  title="Exporter le mois affiché (Excel)"
+                >
+                  Export Excel
+                </button>
+              </div>
+
               <div v-if="exportHint" class="text-[11px] text-amber-300/80">
                 {{ exportHint }}
               </div>

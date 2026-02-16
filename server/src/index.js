@@ -3,6 +3,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { z } from "zod";
+import ExcelJS from "exceljs";
 import { Mistral } from "@mistralai/mistralai";
 import { createClient } from "@supabase/supabase-js";
 
@@ -937,12 +938,10 @@ app.get("/api/activities/export", async (req, res) => {
     const { user, jwt } = auth;
     const supabaseUser = supabaseForJwt(jwt);
 
-    const q = z
-      .object({
-        year: z.coerce.number().int().min(2000).max(2100),
-        month: z.coerce.number().int().min(1).max(12),
-      })
-      .parse(req.query);
+    const q = z.object({
+      year: z.coerce.number().int().min(2000).max(2100),
+      month: z.coerce.number().int().min(1).max(12),
+    }).parse(req.query);
 
     const { startStr, endStr } = startEndOfMonth(q.year, q.month);
 
@@ -956,39 +955,133 @@ app.get("/api/activities/export", async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    const header = "day;id_ticket;sujet;projet;temps_passe_h;type;impute";
     function sanitizeCsvCell(v) {
       let s = String(v ?? "")
         .replaceAll(";", ",")
         .replaceAll("\n", " ")
         .replaceAll("\r", " ");
 
+      // protège Excel injection
       if (/^[=+\-@]/.test(s)) s = "'" + s;
       return s;
     }
-    const lines = (data ?? []).map((r) =>
-      [r.day, r.id_ticket, adoWorkItemUrl(r.id_ticket), r.sujet, r.projet, r.temps_passe_h, r.type, r.impute]
-        .map((v) =>
-          String(v ?? "")
-            .replaceAll(";", ",")
-            .replaceAll("\n", " ")
-            .replaceAll("\r", " ")
-        )
-        .join(";")
-    );
+    const header = "day;id_ticket;ticket_url;sujet;projet;temps_passe_h;type;impute";
+
+    const lines = (data ?? []).map((r) => {
+      const url = adoWorkItemUrl(r.id_ticket); // attention: doit gérer "" / null
+      return [
+        r.day,
+        r.id_ticket,
+        url,
+        r.sujet,
+        r.projet,
+        r.temps_passe_h,
+        r.type,
+        r.impute,
+      ].map(sanitizeCsvCell).join(";");
+    });
 
     const csv = [header, ...lines].join("\n");
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="activities_${q.year}-${String(q.month).padStart(
-        2,
-        "0"
-      )}.csv"`
+      `attachment; filename="activities_${q.year}-${String(q.month).padStart(2, "0")}.csv"`
     );
-    const csvWithBom = "\uFEFF" + csv;
-    return res.send(csvWithBom);
+    return res.send("\uFEFF" + csv);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+app.get("/api/activities/export-xlsx", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const q = z.object({
+      year: z.coerce.number().int().min(2000).max(2100),
+      month: z.coerce.number().int().min(1).max(12),
+    }).parse(req.query);
+
+    const { startStr, endStr } = startEndOfMonth(q.year, q.month);
+
+    const { data, error } = await supabaseUser
+      .from("activities")
+      .select("day, id_ticket, sujet, projet, temps_passe_h, type, impute")
+      .eq("user_id", user.id)
+      .gte("day", startStr)
+      .lte("day", endStr)
+      .order("day", { ascending: true })
+      .order("id", { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Activity AI";
+    wb.created = new Date();
+
+    const ws = wb.addWorksheet(`activities_${q.year}-${String(q.month).padStart(2, "0")}`);
+
+    // Colonnes Excel
+    ws.columns = [
+      { header: "Date", key: "day", width: 12 },
+      { header: "ID Ticket", key: "id_ticket", width: 18 },
+      { header: "Sujet", key: "sujet", width: 50 },
+      { header: "Projet", key: "projet", width: 18 },
+      { header: "Charge réelle (h)", key: "temps_passe_h", width: 16 },
+      { header: "Type", key: "type", width: 20 },
+      { header: "Code VSA", key: "impute", width: 18 },
+    ];
+
+    // Header style + filter
+    ws.getRow(1).font = { bold: true };
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: ws.columns.length },
+    };
+
+    // Format colonnes
+    ws.getColumn("temps_passe_h").numFmt = "0.00";
+
+    // Data rows + Hyperlink sur ID Ticket
+    for (const r of data ?? []) {
+      const row = ws.addRow({
+        day: r.day,
+        id_ticket: String(r.id_ticket ?? "").trim(),
+        sujet: r.sujet ?? "",
+        projet: r.projet ?? "",
+        temps_passe_h: Number(r.temps_passe_h ?? 0),
+        type: r.type ?? "",
+        impute: r.impute ?? "",
+      });
+
+      const idTicket = String(r.id_ticket ?? "").trim();
+      if (idTicket) {
+        const url = adoWorkItemUrl(idTicket);
+        if (url) {
+          const cell = row.getCell("id_ticket"); // key-based
+          cell.value = { text: idTicket, hyperlink: url };
+          cell.font = { color: { argb: "FF2563EB" }, underline: true };
+        }
+      }
+    }
+
+    // Response
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_${q.year}-${String(q.month).padStart(2, "0")}.xlsx"`
+    );
+
+    const buffer = await wb.xlsx.writeBuffer();
+    return res.send(Buffer.from(buffer));
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
   }
