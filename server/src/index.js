@@ -1534,5 +1534,202 @@ app.get("/api/pm/export", async (req, res) => {
   }
 });
 
+app.get("/api/pm/export-range-xlsx", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z.object({
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      userId: z.string().optional(),
+    }).parse(req.query);
+
+    const supabaseUser = supabaseForJwt(jwt);
+
+    // profiles map
+    const { data: profiles, error: pErr } = await supabaseUser
+      .from("profiles")
+      .select("id, full_name, role");
+    if (pErr) throw new Error(pErr.message);
+
+    const nameById = new Map(
+      (profiles ?? []).map((p) => [p.id, (p.full_name ?? "").trim() || p.id])
+    );
+
+    // activities range
+    let actsQ = supabaseUser
+      .from("activities")
+      .select("user_id, day, id_ticket, sujet, projet, temps_passe_h, type, impute")
+      .gte("day", q.from)
+      .lte("day", q.to)
+      .order("user_id", { ascending: true })
+      .order("day", { ascending: true });
+
+    if (q.userId) actsQ = actsQ.eq("user_id", q.userId);
+
+    const { data: acts, error: aErr } = await actsQ;
+    if (aErr) throw new Error(aErr.message);
+
+    // --- Excel
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Activities");
+
+    ws.columns = [
+      { header: "Nom", key: "full_name", width: 22 },
+      { header: "User ID", key: "user_id", width: 36 },
+      { header: "Date", key: "day", width: 12 },
+      { header: "ID Ticket", key: "id_ticket", width: 14 },
+      { header: "Sujet", key: "sujet", width: 40 },
+      { header: "Projet", key: "projet", width: 18 },
+      { header: "Temps (h)", key: "temps_passe_h", width: 10 },
+      { header: "Type", key: "type", width: 18 },
+      { header: "Code VSA", key: "impute", width: 16 },
+    ];
+
+    ws.getRow(1).font = { bold: true };
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: ws.columns.length },
+    };
+
+    for (const r of acts ?? []) {
+      const fullName = nameById.get(r.user_id) ?? r.user_id;
+      const row = ws.addRow({
+        full_name: fullName,
+        user_id: r.user_id,
+        day: r.day,
+        id_ticket: r.id_ticket ?? "",
+        sujet: r.sujet ?? "",
+        projet: r.projet ?? "",
+        temps_passe_h: Number(r.temps_passe_h ?? 0),
+        type: r.type ?? "",
+        impute: r.impute ?? "",
+      });
+
+      // Hyperlink sur ID Ticket si numérique
+      const url = adoWorkItemUrl(r.id_ticket);
+      if (url) {
+        const cell = row.getCell("id_ticket");
+        cell.value = { text: String(r.id_ticket), hyperlink: url };
+        cell.font = { color: { argb: "FF10B981" }, underline: true };
+      }
+    }
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_CP_${q.from}_to_${q.to}${q.userId ? `_user_${q.userId}` : ""}.xlsx"`
+    );
+
+    await wb.xlsx.write(res);
+    return res.end();
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+app.get("/api/pm/export-xlsx", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { user, jwt } = auth;
+    const prof = await getRole(user.id);
+    if (prof.role !== "pm") return res.status(403).json({ error: "Forbidden" });
+
+    const q = z.object({
+      year: z.coerce.number().int().min(2000).max(2100),
+      month: z.coerce.number().int().min(1).max(12),
+    }).parse(req.query);
+
+    const { startStr, endStr } = startEndOfMonth(q.year, q.month);
+    const supabaseUser = supabaseForJwt(jwt);
+
+    const { data: profiles, error: pErr } = await supabaseUser
+      .from("profiles")
+      .select("id, full_name, role");
+    if (pErr) throw new Error(pErr.message);
+
+    const nameById = new Map(
+      (profiles ?? []).map((p) => [p.id, (p.full_name ?? "").trim() || p.id])
+    );
+
+    const { data: acts, error: aErr } = await supabaseUser
+      .from("activities")
+      .select("user_id, day, id_ticket, sujet, projet, temps_passe_h, type, impute")
+      .gte("day", startStr)
+      .lte("day", endStr)
+      .order("user_id", { ascending: true })
+      .order("day", { ascending: true });
+
+    if (aErr) throw new Error(aErr.message);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Activities");
+
+    ws.columns = [
+      { header: "Nom", key: "full_name", width: 22 },
+      { header: "User ID", key: "user_id", width: 36 },
+      { header: "Date", key: "day", width: 12 },
+      { header: "ID Ticket", key: "id_ticket", width: 14 },
+      { header: "Sujet", key: "sujet", width: 40 },
+      { header: "Projet", key: "projet", width: 18 },
+      { header: "Temps (h)", key: "temps_passe_h", width: 10 },
+      { header: "Type", key: "type", width: 18 },
+      { header: "Code VSA", key: "impute", width: 16 },
+    ];
+
+    ws.getRow(1).font = { bold: true };
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: ws.columns.length },
+    };
+
+    for (const r of acts ?? []) {
+      const fullName = nameById.get(r.user_id) ?? r.user_id;
+      const row = ws.addRow({
+        full_name: fullName,
+        user_id: r.user_id,
+        day: r.day,
+        id_ticket: r.id_ticket ?? "",
+        sujet: r.sujet ?? "",
+        projet: r.projet ?? "",
+        temps_passe_h: Number(r.temps_passe_h ?? 0),
+        type: r.type ?? "",
+        impute: r.impute ?? "",
+      });
+
+      const url = adoWorkItemUrl(r.id_ticket);
+      if (url) {
+        const cell = row.getCell("id_ticket");
+        cell.value = { text: String(r.id_ticket), hyperlink: url };
+        cell.font = { color: { argb: "FF10B981" }, underline: true };
+      }
+    }
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activities_CP_${q.year}-${String(q.month).padStart(2, "0")}.xlsx"`
+    );
+
+    await wb.xlsx.write(res);
+    return res.end();
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
 const port = Number(process.env.PORT || 8787);
 app.listen(port, () => console.log(`✅ server on http://localhost:${port}`));
