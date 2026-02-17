@@ -542,20 +542,41 @@ onMounted(async () => {
             @click="exportMonth(0)"
             class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
           >
-            Export CP mois courant
+            Export CP mois courant(CSV)
           </button>
           <button
-            @click="exportMonth(-1)"
+            @click="exportMonthXlsx(0)"
             class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
           >
-            Export CP mois précédent
+            Export CP mois courant (Excel)
+          </button>
+
+          <button
+            @click="exportMonth(-1)"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            Export CP mois précédent(CSV)
+          </button>
+
+          <button
+            @click="exportMonthXlsx(-1)"
+            class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
+          >
+            Export CP mois précédent (Excel)
           </button>
 
           <button
             @click="exportRange()"
+            class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs"
+          >
+            Export CP période (CSV)
+          </button>
+
+          <button
+            @click="exportRangeXlsx()"
             class="rounded-lg bg-emerald-400 text-zinc-950 px-3 py-1 text-xs"
           >
-            Export CP période
+            Export CP période (Excel)
           </button>
 
           <button
@@ -614,9 +635,17 @@ onMounted(async () => {
           <button
             @click="exportRange(selectedUserId)"
             :disabled="!selectedUserId"
+            class="rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-2 text-sm disabled:opacity-50"
+          >
+            Export dev (CSV)
+          </button>
+
+          <button
+            @click="exportRangeXlsx(selectedUserId)"
+            :disabled="!selectedUserId"
             class="rounded-xl bg-emerald-400 text-zinc-950 font-medium px-4 py-2 disabled:opacity-50"
           >
-            Export dev (période)
+            Export dev (Excel)
           </button>
 
           <button
