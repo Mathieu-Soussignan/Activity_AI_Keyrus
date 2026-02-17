@@ -139,6 +139,7 @@ const ActivityType = [
   "Support",
   "Projet",
   "Congés",
+  "Alternance",
   "Week-end",
   "Autre",
   "Evol",
@@ -1404,7 +1405,7 @@ app.get("/api/pm/export-range", async (req, res) => {
       return s;
     }
 
-    const header = "full_name;user_id;day;id_ticket;sujet;projet;temps_passe_h;type;impute";
+    const header = "full_name;user_id;day;id_ticket;ticket_url;sujet;projet;temps_passe_h;type;impute";
     const lines = (acts ?? []).map((r) => {
       const fullName = nameById.get(r.user_id) ?? r.user_id;
       return [
@@ -1484,7 +1485,7 @@ app.get("/api/pm/export", async (req, res) => {
     if (aErr) throw new Error(aErr.message);
 
     // 3) CSV
-    const header = "full_name;user_id;day;id_ticket;sujet;projet;temps_passe_h;type;impute";
+    const header = "full_name;user_id;day;id_ticket;ticket_url;sujet;projet;temps_passe_h;type;impute";
     function sanitizeCsvCell(v) {
       let s = String(v ?? "")
         .replaceAll(";", ",")

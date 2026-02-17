@@ -30,17 +30,18 @@ type ActivityLine = {
   sujet: string;
   projet: string;
   temps_passe_j: number; // en jours (affichage)
+  temps_passe_h: number; // en heures (source backend)
   type: string;
   impute: string; // Code VSA
 };
 
+// --------------------
+// Dates helpers
+// --------------------
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 function yyyyMmDd(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-function yyyyMmDdLocal(d: Date) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 function startOfMonth(d: Date) {
@@ -60,6 +61,16 @@ function startOfWeekMonday(d: Date) {
   return x;
 }
 
+// parse YYYY-MM-DD (sécurisé)
+function parseYmd(ymd: string): Date {
+  const [y, m, d] = String(ymd || "").split("-").map((x) => Number(x));
+  if (!y || !m || !d) return new Date(NaN);
+  return new Date(y, m - 1, d);
+}
+
+// --------------------
+// State
+// --------------------
 const loading = ref(false);
 const msg = ref("");
 const users = ref<UserStat[]>([]);
@@ -70,13 +81,17 @@ const ADO_BASE = "https://scp-tma-flux.visualstudio.com";
 const ADO_PROJECT = "Gestion des tickets";
 
 /**
- * Retourne l'URL de l'item de travail ADO correspondant à l'ID de ticket.
- * param idTicket L'ID de ticket ADO.
- * returns L'URL de l'item de travail ADO, ou null si l'ID est invalide.
+ * Retourne l'URL ADO.
+ * Accepte: "12345", "INC12345", "US 12345", etc.
  */
 function adoWorkItemUrl(idTicket: string) {
-  const id = String(idTicket ?? "").trim();
-  if (!/^\d+$/.test(id)) return null;
+  const raw = String(idTicket ?? "").trim();
+  if (!raw) return null;
+
+  const m = raw.match(/(\d+)/); // prend le premier bloc numérique
+  if (!m) return null;
+
+  const id = m[1];
   return `${ADO_BASE}/${encodeURIComponent(ADO_PROJECT)}/_workitems/edit/${id}/`;
 }
 
@@ -93,7 +108,25 @@ const totalTeamHours = computed(() =>
   users.value.reduce((acc, u) => acc + (Number(u.totalHours) || 0), 0).toFixed(1)
 );
 
-// ---- Détail par dev (sélection + lignes)
+// --------------------
+// Conversion heures -> jours (PM)
+// --------------------
+const HOURS_PER_DAY = 7;
+const DAY_STEP = 0.25;
+
+function clampToDayStep(x: number) {
+  const n = Number(x ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  const clamped = Math.min(Math.max(n, 0), 10); // 10J max arbitraire PM
+  return Math.round(clamped / DAY_STEP) * DAY_STEP;
+}
+function hToJ(h: number) {
+  return clampToDayStep(Number(h || 0) / HOURS_PER_DAY);
+}
+
+// --------------------
+// Détail par dev
+// --------------------
 const selectedUserId = ref<string>("");
 const activitiesLoading = ref(false);
 const activitiesError = ref("");
@@ -101,6 +134,9 @@ const activities = ref<ActivityLine[]>([]);
 const savingVsa = ref(false);
 const vsaMsg = ref("");
 
+// --------------------
+// Auth / guard PM
+// --------------------
 async function ensurePm() {
   const { data } = await supabase.auth.getSession();
   if (!data?.session) {
@@ -125,6 +161,9 @@ async function ensurePm() {
   }
 }
 
+// --------------------
+// Data loads
+// --------------------
 async function loadCompletion() {
   msg.value = "";
   loading.value = true;
@@ -136,9 +175,9 @@ async function loadCompletion() {
     users.value = (data?.users ?? [])
       .filter((u: any) => (u?.role ?? "") === "dev")
       .map((u: any) => ({
-        userId: u.userId,
-        name: u.name,
-        role: u.role,
+        userId: String(u.userId),
+        name: String(u.name ?? ""),
+        role: String(u.role ?? ""),
         filledDays: Number(u.filledDays ?? 0),
         totalHours: Number(u.totalHours ?? 0),
       }))
@@ -157,7 +196,9 @@ async function loadMonthlySummary() {
   summaryLoading.value = true;
 
   try {
-    const d = new Date(from.value);
+    const d = parseYmd(from.value);
+    if (!Number.isFinite(d.getTime())) throw new Error("Date 'from' invalide");
+
     const year = d.getFullYear();
     const month = d.getMonth() + 1;
 
@@ -171,8 +212,7 @@ async function loadMonthlySummary() {
     });
     summaryText.value = aiResp.data?.summary ?? null;
   } catch (e: any) {
-    summaryError.value =
-      e?.response?.data?.error || e?.message || "Erreur génération résumé mensuel";
+    summaryError.value = e?.response?.data?.error || e?.message || "Erreur génération résumé mensuel";
   } finally {
     summaryLoading.value = false;
   }
@@ -196,10 +236,11 @@ function setWeeksBack(n: number) {
   const end = new Date(startThisWeek);
   end.setDate(end.getDate() - 1);
 
-  from.value = yyyyMmDdLocal(start);
-  to.value = yyyyMmDdLocal(end);
+  from.value = yyyyMmDd(start);
+  to.value = yyyyMmDd(end);
 }
 
+// ---- Exports (CSV existants)
 async function exportRange(userId?: string) {
   msg.value = "";
   try {
@@ -213,9 +254,7 @@ async function exportRange(userId?: string) {
 
     const a = document.createElement("a");
     a.href = url;
-    a.download = `activities_CP_${from.value}_to_${to.value}${
-      userId ? `_user_${userId}` : ""
-    }.csv`;
+    a.download = `activities_CP_${from.value}_to_${to.value}${userId ? `_user_${userId}` : ""}.csv`;
     a.click();
 
     window.URL.revokeObjectURL(url);
@@ -251,6 +290,60 @@ async function exportMonth(offset: number) {
   }
 }
 
+// ---- Exports XLSX (préparé côté front : endpoints à ajouter côté back)
+async function exportRangeXlsx(userId?: string) {
+  msg.value = "";
+  try {
+    const resp = await api.get("/api/pm/export-range-xlsx", {
+      params: { from: from.value, to: to.value, ...(userId ? { userId } : {}) },
+      responseType: "blob",
+    });
+
+    const blob = new Blob([resp.data], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `activities_CP_${from.value}_to_${to.value}${userId ? `_user_${userId}` : ""}.xlsx`;
+    a.click();
+
+    window.URL.revokeObjectURL(url);
+  } catch (e: any) {
+    msg.value = e?.response?.data?.error || e?.message || "Erreur export période Excel";
+  }
+}
+
+async function exportMonthXlsx(offset: number) {
+  msg.value = "";
+  try {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+
+    const resp = await api.get("/api/pm/export-xlsx", {
+      params: { year, month },
+      responseType: "blob",
+    });
+
+    const blob = new Blob([resp.data], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `activities_CP_${year}-${pad2(month)}.xlsx`;
+    a.click();
+
+    window.URL.revokeObjectURL(url);
+  } catch (e: any) {
+    msg.value = e?.response?.data?.error || e?.message || "Erreur export CP Excel";
+  }
+}
+
 // ---- charger les lignes d'un dev sur from/to
 async function loadUserActivities() {
   activitiesError.value = "";
@@ -266,22 +359,38 @@ async function loadUserActivities() {
     });
 
     const rows = (data?.rows ?? data?.activities ?? data ?? []) as any[];
-    activities.value = rows.map((r: any) => ({
-      id: String(r.id),
-      day: String(r.day ?? ""),
-      id_ticket: String(r.id_ticket ?? ""),
-      sujet: String(r.sujet ?? ""),
-      projet: String(r.projet ?? ""),
-      temps_passe_j: Number(r.temps_passe_j ?? 0),
-      type: String(r.type ?? ""),
-      impute: String(r.impute ?? ""),
-    }));
+    activities.value = rows.map((r: any) => {
+      const h = Number(r.temps_passe_h ?? 0);
+      return {
+        id: String(r.id),
+        day: String(r.day ?? ""),
+        id_ticket: String(r.id_ticket ?? ""),
+        sujet: String(r.sujet ?? ""),
+        projet: String(r.projet ?? ""),
+        temps_passe_h: h,
+        temps_passe_j: hToJ(h),
+        type: String(r.type ?? ""),
+        impute: String(r.impute ?? ""),
+      };
+    });
   } catch (e: any) {
-    activitiesError.value =
-      e?.response?.data?.error || e?.message || "Erreur chargement activités";
+    activitiesError.value = e?.response?.data?.error || e?.message || "Erreur chargement activités";
   } finally {
     activitiesLoading.value = false;
   }
+}
+
+// --------------------
+// Watchers (éviter spam + reset résumé sur changement de mois)
+// --------------------
+let reloadTimer: number | null = null;
+
+function scheduleReloadActivities() {
+  if (!selectedUserId.value) return;
+  if (reloadTimer) window.clearTimeout(reloadTimer);
+  reloadTimer = window.setTimeout(() => {
+    loadUserActivities();
+  }, 250);
 }
 
 // recharge auto quand on change de dev
@@ -290,10 +399,31 @@ watch(selectedUserId, async () => {
 });
 
 // recharge auto si la période change (si un dev est sélectionné)
-watch([from, to], async () => {
-  if (!selectedUserId.value) return;
-  await loadUserActivities();
+watch([from, to], () => {
+  scheduleReloadActivities();
 });
+
+// Auto clear résumé si on change de mois
+watch(
+  () => [from.value, to.value] as const,
+  (next, prev) => {
+    const [f] = next;
+    const [pf] = prev ?? next;
+
+    const prevDate = parseYmd(pf);
+    const newDate = parseYmd(f);
+    if (!Number.isFinite(prevDate.getTime()) || !Number.isFinite(newDate.getTime())) return;
+
+    if (
+      prevDate.getMonth() !== newDate.getMonth() ||
+      prevDate.getFullYear() !== newDate.getFullYear()
+    ) {
+      summaryStats.value = null;
+      summaryText.value = null;
+      summaryError.value = "";
+    }
+  }
+);
 
 // ---- save VSA (batch)
 async function saveVsaForSelectedDev() {
@@ -321,8 +451,7 @@ async function saveVsaForSelectedDev() {
     vsaMsg.value = `Code VSA sauvegardé (${data?.updated ?? payload.length} lignes)`;
     await loadUserActivities();
   } catch (e: any) {
-    activitiesError.value =
-      e?.response?.data?.error || e?.message || "Erreur sauvegarde Code VSA";
+    activitiesError.value = e?.response?.data?.error || e?.message || "Erreur sauvegarde Code VSA";
   } finally {
     savingVsa.value = false;
   }
@@ -514,7 +643,7 @@ onMounted(async () => {
                 <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
                 <th class="w-[20rem] text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
                 <th class="w-48 text-left py-2 pr-2 whitespace-nowrap">Projet</th>
-                <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">Charge réelle</th>
+                <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
                 <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Type</th>
                 <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
               </tr>
@@ -528,18 +657,30 @@ onMounted(async () => {
               </tr>
 
               <tr v-for="a in activities" :key="a.id" class="border-t border-zinc-800">
+                <!-- Date -->
                 <td class="py-2 pr-2 whitespace-nowrap">
                   <span class="text-[11px] font-mono text-zinc-400">{{ a.day }}</span>
                 </td>
 
-                <td class="py-2 pr-2">
-                  <input
-                    :value="a.id_ticket"
-                    class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 text-zinc-300"
-                    disabled
-                  />
+                <!-- ID Ticket (lien ADO) -->
+                <td class="py-2 pr-2 whitespace-nowrap overflow-hidden text-ellipsis">
+                  <template v-if="adoWorkItemUrl(a.id_ticket)">
+                    <a
+                      :href="adoWorkItemUrl(a.id_ticket)!"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="underline text-emerald-300 hover:text-emerald-200 font-mono"
+                      :title="a.id_ticket"
+                    >
+                      {{ a.id_ticket }}
+                    </a>
+                  </template>
+                  <template v-else>
+                    <span class="font-mono text-zinc-300">{{ a.id_ticket || "—" }}</span>
+                  </template>
                 </td>
 
+                <!-- Sujet -->
                 <td class="py-2 pr-2">
                   <input
                     :value="a.sujet"
@@ -548,6 +689,7 @@ onMounted(async () => {
                   />
                 </td>
 
+                <!-- Projet -->
                 <td class="py-2 pr-2">
                   <input
                     :value="a.projet"
@@ -556,6 +698,7 @@ onMounted(async () => {
                   />
                 </td>
 
+                <!-- Charge réelle (J) -->
                 <td class="py-2 pr-2">
                   <input
                     :value="String(a.temps_passe_j).replace('.', ',') + ' J'"
@@ -564,27 +707,16 @@ onMounted(async () => {
                   />
                 </td>
 
+                <!-- Type -->
                 <td class="py-2 pr-2">
-                  <a
-                    v-if="adoWorkItemUrl(a.id_ticket)"
-                    :href="adoWorkItemUrl(a.id_ticket)!"
-                    target="_blank"
-                    rel="noopener"
-                    class="block w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 text-zinc-300 hover:border-zinc-600"
-                    :title="adoWorkItemUrl(a.id_ticket)!"
-                  >
-                    {{ a.id_ticket }}
-                  </a>
-
                   <input
-                    v-else
-                    :value="a.id_ticket"
+                    :value="a.type"
                     class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1 text-zinc-300"
                     disabled
                   />
                 </td>
 
-                <!-- seul champ éditable côté PM -->
+                <!-- Code VSA (seul champ éditable côté PM) -->
                 <td class="py-2 pr-2">
                   <input
                     v-model="a.impute"
