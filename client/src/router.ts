@@ -6,12 +6,12 @@ import PmDashboard from "./views/PmDashboard.vue";
 import CompleteProfile from "./views/CompleteProfile.vue";
 import SharePointPoc from "./views/SharePointPoc.vue";
 import { supabase } from "./lib/supabase";
-import { api } from "./lib/api";
+import { ensureMe, clearMeCache } from "./lib/me";
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", redirect: "/activity" },
+    { path: "/", redirect: "/activities" },
     { path: "/login", component: Login },
     { path: "/reset-password", component: ResetPassword },
     { path: "/complete-profile", component: CompleteProfile },
@@ -23,7 +23,7 @@ const router = createRouter({
     { path: "/pm", redirect: "/pm-dashboard" },
     { path: "/pm-dashboard", component: PmDashboard },
     // fallback
-    { path: "/:pathMatch(.*)*", redirect: "/activity" },
+    { path: "/:pathMatch(.*)*", redirect: "/activities" },
   ],
 });
 
@@ -39,17 +39,16 @@ router.beforeEach(async (to) => {
   }
 
   if (isAuthed && to.path === "/login") {
-    return "/activity";
+    return "/activities";
   }
 
   if (isAuthed && !publicRoutes.includes(to.path)) {
     if (to.path === profileRoute) return true;
 
     try {
-      const me = await api.get("/api/me");
-
-      const fullName = String(me?.data?.full_name ?? "").trim();
-      const role = String(me?.data?.role ?? "");
+      const me = await ensureMe();
+      const fullName = String(me?.full_name ?? "").trim();
+      const role = String(me?.role ?? "");
 
       // force completion profil
       if (!fullName) {
@@ -58,10 +57,17 @@ router.beforeEach(async (to) => {
 
       // routes PM uniquement
       if (to.path === "/pm" || to.path === "/pm-dashboard") {
-        if (role !== "pm") return "/activity";
+        if (role !== "pm") return "/activities";
       }
-    } catch {
-      return "/login";
+    } catch (err: any) {
+      // If 401 Unauthorized, token is expired: sign out cleanly before redirecting to login to avoid loop
+      if (err?.response?.status === 401) {
+        clearMeCache();
+        await supabase.auth.signOut();
+        return "/login";
+      }
+      // If network error (backend starting up or temporary glitch), allow staying on page instead of infinite redirect bounce
+      return true;
     }
   }
 
