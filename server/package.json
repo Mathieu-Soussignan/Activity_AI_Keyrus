@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "test:excel": "node test-excel-validation.js",
     "test:errors": "node test-error-scenarios.js",
-    "test": "node test-excel-validation.js && node test-error-scenarios.js"
+    "test:auth": "node test-auth-recovery-flow.js",
+    "test": "node test-excel-validation.js && node test-error-scenarios.js && node test-auth-recovery-flow.js"
   },
   "dependencies": {
     "@azure/msal-node": "^5.6.0",

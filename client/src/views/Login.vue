@@ -79,19 +79,41 @@ async function sendResetEmail() {
   try {
     const target = (forgotEmail.value || email.value).trim();
     if (!target) {
-      forgotMsg.value = "Renseigne ton email.";
+      forgotMsg.value = "Renseigne ton adresse email.";
       return;
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(target, {
       redirectTo: RESET_REDIRECT_TO,
     });
-    if (error) throw error;
+    
+    if (error) {
+      if (
+        error.code === "over_email_send_rate_limit" ||
+        error.status === 429 ||
+        error.message?.toLowerCase().includes("rate limit") ||
+        error.message?.includes("60 seconds")
+      ) {
+        forgotMsg.value = "Trop de demandes de réinitialisation. Par sécurité, veuillez patienter au moins 60 secondes avant de réessayer.";
+      } else {
+        forgotMsg.value = error.message || "Erreur lors de l'envoi de l'email de réinitialisation.";
+      }
+      return;
+    }
 
     forgotSuccess.value =
-      "✅ Email envoyé. Clique sur le lien reçu pour définir un nouveau mot de passe.";
+      "✅ Demande envoyée. Si un compte existe avec cet email, un lien de réinitialisation vient d'être envoyé. (Pense à vérifier tes spams / courriers indésirables).";
   } catch (e: any) {
-    forgotMsg.value = e?.message || "Erreur envoi email.";
+    if (
+      e?.code === "over_email_send_rate_limit" ||
+      e?.status === 429 ||
+      e?.message?.toLowerCase().includes("rate limit") ||
+      e?.message?.includes("60 seconds")
+    ) {
+      forgotMsg.value = "Trop de demandes de réinitialisation. Par sécurité, veuillez patienter au moins 60 secondes avant de réessayer.";
+    } else {
+      forgotMsg.value = e?.message || "Erreur envoi email.";
+    }
   } finally {
     forgotLoading.value = false;
   }
