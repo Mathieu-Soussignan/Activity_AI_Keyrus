@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 import { supabase } from "../lib/supabase";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 
 type Mode = "login" | "signup";
 
 const router = useRouter();
+const route = useRoute();
 
 const mode = ref<Mode>("login");
 
@@ -26,6 +27,12 @@ const forgotSuccess = ref<string>("");
 // Important : URL publique du front (prod), ou localhost en dev.
 // Supabase enverra le lien de reset vers cette URL + route /reset-password
 const RESET_REDIRECT_TO = `${window.location.origin}/reset-password`;
+
+onMounted(() => {
+  if (route.query.session_expired) {
+    msg.value = "Votre session précédente a expiré. Veuillez vous reconnecter.";
+  }
+});
 
 function resetMessages() {
   msg.value = "";
