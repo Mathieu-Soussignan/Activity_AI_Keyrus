@@ -1910,5 +1910,122 @@ app.post("/api/poc/ms/local/test-write", async (req, res) => {
   }
 });
 
+// 12. Enable Mock / Simulation Session
+app.post("/api/poc/ms/mock/enable", (_req, res) => {
+  try {
+    const status = graphService.enableMockSession();
+    return res.json({ ok: true, status });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur activation simulation" });
+  }
+});
+
+// 13. Unit Conversion Helper (Hours <-> Days)
+app.get("/api/poc/ms/convert-units", (req, res) => {
+  try {
+    const hours = req.query.hours !== undefined ? Number(req.query.hours) : null;
+    const days = req.query.days !== undefined ? Number(req.query.days) : null;
+
+    const result = {
+      hoursInput: hours,
+      daysInput: days,
+      convertedDays: hours !== null ? graphService.hoursToExcelDays(hours) : null,
+      convertedHours: days !== null ? graphService.excelDaysToHours(days) : null,
+      allowedDayCharges: graphService.ALLOWED_DAY_CHARGES,
+      hoursPerDay: graphService.HOURS_PER_DAY,
+    };
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erreur conversion d'unités" });
+  }
+});
+
+// 14. Full Workbook Diff & Integrity Check
+app.get("/api/poc/ms/diff", async (_req, res) => {
+  try {
+    const diff = await graphService.compareWorkbooks();
+    return res.json(diff);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur comparaison classeurs" });
+  }
+});
+
+// 15. Test Error Scenarios (Interactive error simulator)
+app.get("/api/poc/ms/test-scenario/:scenarioId", (req, res) => {
+  const { scenarioId } = req.params;
+
+  switch (scenarioId) {
+    case "unauthenticated":
+      return res.status(401).json(graphService.formatGraphError({
+        code: "InvalidAuthenticationToken",
+        message: "Access token is empty or missing.",
+        status: 401,
+      }));
+
+    case "consent_required":
+      return res.status(403).json(graphService.formatGraphError({
+        code: "AADSTS65001",
+        message: "AADSTS65001: The user or administrator has not consented to use the application with ID 'xxx'.",
+        status: 403,
+      }));
+
+    case "app_not_found":
+      return res.status(404).json(graphService.formatGraphError({
+        code: "AADSTS700016",
+        message: "AADSTS700016: Application with identifier 'xxx' was not found in the directory 'keyrus.com'.",
+        status: 404,
+      }));
+
+    case "mfa_required":
+      return res.status(401).json(graphService.formatGraphError({
+        code: "AADSTS50076",
+        message: "AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication.",
+        status: 401,
+      }));
+
+    case "permission_denied":
+      return res.status(403).json(graphService.formatGraphError({
+        code: "Authorization_RequestDenied",
+        message: "Insufficient privileges to complete the operation on SharePoint library.",
+        status: 403,
+      }));
+
+    case "item_not_found":
+      return res.status(404).json(graphService.formatGraphError({
+        code: "ItemNotFound",
+        message: "The resource '2026-08 - Plan d'activité équipe.xlsx' could not be found in the SharePoint drive.",
+        status: 404,
+      }));
+
+    case "worksheet_not_found":
+      return res.status(404).json(graphService.formatGraphError({
+        code: "ResourceNotFound",
+        message: "Worksheet 'Inconnu' does not exist in the workbook.",
+        status: 404,
+      }));
+
+    case "safety_violation":
+      return res.status(403).json({
+        status: 403,
+        category: "SAFETY_GUARD_VIOLATION",
+        title: "Tentative d'écriture interdite sur fichier officiel",
+        message: "SÉCURITÉ STRICTE : L'écriture est INTERDITE sur le fichier officiel '2026-08 - Plan d'activité équipe.xlsx'. Le nom du fichier doit contenir 'TEST'.",
+        actionRequired: "Sélectionner la copie de test '2026-08 - Plan d'activité équipe - TEST.xlsx'.",
+      });
+
+    case "invalid_charge":
+      return res.status(400).json({
+        status: 400,
+        category: "INVALID_CHARGE",
+        title: "Valeur de charge non autorisée",
+        message: "La charge '0.33' n'est pas autorisée par le référentiel métier Excel. Valeurs permises : 0.125, 0.25, 0.5, 0.75, 0.875, 1.0.",
+        allowedValues: graphService.ALLOWED_DAY_CHARGES,
+      });
+
+    default:
+      return res.status(400).json({ error: `Scénario d'erreur inconnu : ${scenarioId}` });
+  }
+});
+
 const port = Number(process.env.PORT || 8787);
 app.listen(port, () => console.log(`✅ server on http://localhost:${port}`));
