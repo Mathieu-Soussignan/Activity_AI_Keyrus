@@ -4,6 +4,7 @@ import Activity from "./views/Activity.vue";
 import ResetPassword from "./views/ResetPassword.vue";
 import PmDashboard from "./views/PmDashboard.vue";
 import CompleteProfile from "./views/CompleteProfile.vue";
+import SharePointPoc from "./views/SharePointPoc.vue";
 import { supabase } from "./lib/supabase";
 import { api } from "./lib/api";
 
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: "/reset-password", component: ResetPassword },
     { path: "/complete-profile", component: CompleteProfile },
     { path: "/activity", component: Activity },
+    { path: "/sharepoint-poc", component: SharePointPoc },
 
     // PM
     { path: "/pm", redirect: "/pm-dashboard" },
@@ -24,7 +26,7 @@ const router = createRouter({
   ],
 });
 
-const publicRoutes = ["/login", "/reset-password"];
+const publicRoutes = ["/login", "/reset-password", "/sharepoint-poc"];
 const profileRoute = "/complete-profile";
 
 router.beforeEach(async (to) => {

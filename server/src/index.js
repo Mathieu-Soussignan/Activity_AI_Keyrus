@@ -6,6 +6,7 @@ import { z } from "zod";
 import ExcelJS from "exceljs";
 import { Mistral } from "@mistralai/mistralai";
 import { createClient } from "@supabase/supabase-js";
+import * as graphService from "./graphService.js";
 
 const app = express();
 
@@ -1728,6 +1729,184 @@ app.get("/api/pm/export-xlsx", async (req, res) => {
     return res.end();
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Bad request" });
+  }
+});
+
+/**
+ * =========================================================================
+ * MICROSOFT GRAPH & SHAREPOINT POC ROUTES
+ * =========================================================================
+ */
+
+// 1. Get Microsoft OAuth Login URL
+app.get("/api/poc/ms/auth-url", async (_req, res) => {
+  try {
+    const result = await graphService.getAuthUrl();
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur auth-url" });
+  }
+});
+
+// 2. Microsoft OAuth Callback
+app.get("/api/poc/ms/callback", async (req, res) => {
+  const code = req.query.code;
+  const error = req.query.error;
+  const errorDesc = req.query.error_description;
+  const frontendOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+
+  if (error) {
+    console.error("Microsoft OAuth Error callback:", error, errorDesc);
+    return res.redirect(
+      `${frontendOrigin}/sharepoint-poc?auth_error=${encodeURIComponent(
+        String(errorDesc || error)
+      )}`
+    );
+  }
+
+  if (!code) {
+    return res.redirect(
+      `${frontendOrigin}/sharepoint-poc?auth_error=${encodeURIComponent(
+        "Code d'autorisation manquant"
+      )}`
+    );
+  }
+
+  try {
+    await graphService.handleCallback(String(code));
+    return res.redirect(`${frontendOrigin}/sharepoint-poc?auth_success=1`);
+  } catch (e) {
+    console.error("Token exchange failed:", e);
+    return res.redirect(
+      `${frontendOrigin}/sharepoint-poc?auth_error=${encodeURIComponent(
+        e?.message || "Échec échange token"
+      )}`
+    );
+  }
+});
+
+// 3. Get Microsoft session status
+app.get("/api/poc/ms/status", (_req, res) => {
+  try {
+    const status = graphService.getStatus();
+    return res.json(status);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur status" });
+  }
+});
+
+// 4. Logout Microsoft session
+app.post("/api/poc/ms/logout", (_req, res) => {
+  try {
+    const result = graphService.logout();
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur logout" });
+  }
+});
+
+// 5. Discover SharePoint Site
+app.get("/api/poc/ms/site", async (req, res) => {
+  try {
+    const siteSearch = String(req.query.search || "KEYFR-Projets");
+    const result = await graphService.discoverSite(siteSearch);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur recherche site" });
+  }
+});
+
+// 6. Discover Drives & Activity File
+app.get("/api/poc/ms/files", async (req, res) => {
+  try {
+    const siteId = String(req.query.siteId || "");
+    const query = String(req.query.query || "Plan d'activité");
+
+    if (!siteId) {
+      return res.status(400).json({ error: "siteId requis" });
+    }
+
+    const result = await graphService.discoverFiles(siteId, query);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur recherche fichiers" });
+  }
+});
+
+// 7. List Worksheets of Excel workbook via Graph
+app.get("/api/poc/ms/worksheets", async (req, res) => {
+  try {
+    const driveId = String(req.query.driveId || "");
+    const itemId = String(req.query.itemId || "");
+
+    if (!driveId || !itemId) {
+      return res.status(400).json({ error: "driveId et itemId requis" });
+    }
+
+    const result = await graphService.listWorksheets(driveId, itemId);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur liste worksheets" });
+  }
+});
+
+// 8. Read Mathieu Worksheet via Graph
+app.get("/api/poc/ms/worksheet/mathieu", async (req, res) => {
+  try {
+    const driveId = String(req.query.driveId || "");
+    const itemId = String(req.query.itemId || "");
+
+    if (!driveId || !itemId) {
+      return res.status(400).json({ error: "driveId et itemId requis" });
+    }
+
+    const result = await graphService.readMathieuWorksheet(driveId, itemId);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur lecture onglet Mathieu" });
+  }
+});
+
+// 9. Controlled Write Test to a TEST file via Graph
+app.post("/api/poc/ms/test-write", async (req, res) => {
+  try {
+    const { driveId, itemId, fileName, tableName, rowData } = req.body || {};
+
+    if (!driveId || !itemId) {
+      return res.status(400).json({ error: "driveId et itemId requis" });
+    }
+
+    const result = await graphService.writeTestRowGraph({
+      driveId,
+      itemId,
+      fileName,
+      tableName,
+      rowData: rowData || {},
+    });
+
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erreur écriture test Graph" });
+  }
+});
+
+// 10. Local Simulation: Inspect local TEST workbook
+app.get("/api/poc/ms/local/inspect", async (_req, res) => {
+  try {
+    const result = await graphService.inspectLocalTestWorkbook();
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur inspection locale" });
+  }
+});
+
+// 11. Local Simulation: Write test row into local TEST workbook
+app.post("/api/poc/ms/local/test-write", async (req, res) => {
+  try {
+    const result = await graphService.writeLocalTestRow(req.body || {});
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur écriture locale test" });
   }
 });
 

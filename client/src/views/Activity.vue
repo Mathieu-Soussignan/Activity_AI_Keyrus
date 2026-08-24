@@ -643,6 +643,14 @@ onMounted(async () => {
             Modifs non sauvegardées
           </div>
 
+          <!-- POC SharePoint -->
+          <router-link
+            to="/sharepoint-poc"
+            class="rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 px-3 py-2 text-sm font-medium hover:bg-blue-500/30 transition"
+          >
+            POC SharePoint
+          </router-link>
+
           <!-- Dashboard CP (PM only) -->
           <button
             v-if="me?.role === 'pm'"
