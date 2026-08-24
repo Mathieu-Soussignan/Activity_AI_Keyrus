@@ -16,6 +16,7 @@ const router = createRouter({
     { path: "/reset-password", component: ResetPassword },
     { path: "/complete-profile", component: CompleteProfile },
     { path: "/activity", component: Activity },
+    { path: "/activities", component: Activity },
     { path: "/sharepoint-poc", component: SharePointPoc },
 
     // PM

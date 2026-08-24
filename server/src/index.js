@@ -7,6 +7,7 @@ import ExcelJS from "exceljs";
 import { Mistral } from "@mistralai/mistralai";
 import { createClient } from "@supabase/supabase-js";
 import * as graphService from "./graphService.js";
+import { ActivityService, analyzeDuration } from "./activityService.js";
 
 const app = express();
 
@@ -65,6 +66,9 @@ const mistral = new Mistral({
 
 // Admin: ONLY for auth.getUser(jwt) + admin-only operations
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// Activity Service V2
+const activityService = new ActivityService(supabaseAdmin, mistral);
 
 // User-scoped client (RLS compatible): anon key + Bearer jwt
 function supabaseForJwt(jwt) {
@@ -2024,6 +2028,105 @@ app.get("/api/poc/ms/test-scenario/:scenarioId", (req, res) => {
 
     default:
       return res.status(400).json({ error: `Scénario d'erreur inconnu : ${scenarioId}` });
+  }
+});
+
+/**
+ * =========================================================================
+ * ACTIVITY AI V2 — BUSINESS APIS (MOCK & LIVE REPOSITORY INTEGRATION)
+ * =========================================================================
+ */
+
+// 1. Natural Language Parse with Mistral & Local Fallback
+app.post("/api/v2/ai/parse-natural", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { text, day } = req.body || {};
+    const result = await activityService.parseNaturalActivity({
+      text: String(text || ""),
+      day: day || new Date().toISOString().slice(0, 10),
+    });
+
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erreur analyse IA naturelle" });
+  }
+});
+
+// 2. Get User Activities
+app.get("/api/v2/activities", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { day, startDate, endDate } = req.query;
+    const activities = await activityService.getActivities(auth.user.id, {
+      day: day ? String(day) : undefined,
+      startDate: startDate ? String(startDate) : undefined,
+      endDate: endDate ? String(endDate) : undefined,
+    });
+
+    return res.json({ success: true, activities });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur récupération activités" });
+  }
+});
+
+// 3. Save Activities for a Day
+app.post("/api/v2/activities", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const { day, activities } = req.body || {};
+    if (!day || !Array.isArray(activities)) {
+      return res.status(400).json({ error: "day (YYYY-MM-DD) et tableau activities requis" });
+    }
+
+    const result = await activityService.saveActivities(auth.user.id, day, activities);
+    return res.json(result);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erreur enregistrement activités" });
+  }
+});
+
+// 4. Delete Single Activity
+app.delete("/api/v2/activities/:id", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const result = await activityService.deleteActivity(auth.user.id, req.params.id);
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur suppression activité" });
+  }
+});
+
+// 5. Personal Developer Summary
+app.get("/api/v2/activities/summary", async (req, res) => {
+  try {
+    const auth = await getUserFromBearer(req);
+    if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+    const dateParam = req.query.date ? new Date(String(req.query.date)) : new Date();
+    const summary = await activityService.getPersonalSummary(auth.user.id, dateParam);
+    return res.json({ success: true, summary });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || "Erreur calcul résumé personnel" });
+  }
+});
+
+// 6. Duration Analysis Helper
+app.get("/api/v2/activities/duration-analysis", (req, res) => {
+  try {
+    const hours = Number(req.query.hours || 0);
+    const analysis = analyzeDuration(hours);
+    return res.json(analysis);
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erreur analyse durée" });
   }
 });
 

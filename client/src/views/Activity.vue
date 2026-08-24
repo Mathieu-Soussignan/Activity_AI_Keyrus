@@ -1,967 +1,892 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { supabase } from "../lib/supabase";
-import { ensureMe, clearMeCache, type Me } from "../lib/me";
-import { api } from "../lib/api";
+import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { supabase } from "../lib/supabase";
+import { api } from "../lib/api";
+import { ensureMe, clearMeCache, type Me } from "../lib/me";
 
 const router = useRouter();
 
-type ActivityType =
-  | "Evol"
-  | "Ano"
-  | "Incident Applicatif"
-  | "Projet"
-  | "Non défini"
-  | "Congés"
-  | "Alternance"
-  | "Week-end";
-
-const PROJECT_GROUPS = [
-  { label: "Plateformes", items: ["Technique", "CRM", "AX", "eComm", "ORO", "Okaveo", "SIRH"] },
-  { label: "Projets / Domaines", items: ["Mail relève", "IRMA", "LMS", "IMPU"] },
-  { label: "Absences", items: ["Absent"] },
+// Reference constants matching Excel schema
+const ALLOWED_PROJECTS = [
+  "AX",
+  "Technique",
+  "CRM",
+  "eComm",
+  "ORO",
+  "Okaveo",
+  "SIRH",
+  "IRMA",
+  "LMS",
+  "IMPU",
+  "Mail relève",
+  "Absent",
+  "Autre",
 ] as const;
 
-type Row = {
+const ALLOWED_TYPES = [
+  "Projet - Evo",
+  "TMA - Correctif",
+  "Incident Applicatif",
+  "Support",
+  "Réunion",
+  "Congés",
+  "Alternance",
+  "Autre",
+] as const;
+
+const ALLOWED_DAY_CHARGES = [0.125, 0.25, 0.5, 0.75, 0.875, 1.0];
+const HOURS_PER_DAY = 7;
+
+type ActivityItem = {
   id: string;
-  day: string;
-
-  id_ticket: string;
-  sujet: string;
-  projet: string;
-
-  temps_passe_h: number;
-  temps_passe_j: number;
-
-  type: ActivityType;
-  impute: string; // Code VSA
+  date?: string;
+  day?: string;
+  ticket: string;
+  flux: string;
+  subject: string;
+  project: string;
+  type: string;
+  hours: number;
+  days: number;
+  helperMessage?: string | null;
+  devOpsUrl?: string | null;
+  syncStatus?: string;
+  syncLabel?: string;
 };
 
-type MonthDayStatus = "weekend" | "filled" | "empty";
-type MonthDayItem = {
-  day: string; // YYYY-MM-DD
-  dayNumber: number;
-  weekdayLabel: string;
-  isWeekend: boolean;
-  status: MonthDayStatus;
-  totalHours: number; // ✅ on garde en heures dans le panel mois (comme avant)
-  linesCount: number;
-};
+// State
+const me = ref<Me | null>(null);
+const currentTab = ref<"saisie" | "historique" | "dashboard">("saisie");
+const inputMode = ref<"ai" | "manual">("ai");
+
+// Saisie state
+const selectedDay = ref<string>(new Date().toISOString().slice(0, 10));
+const naturalText = ref<string>("");
+const isAnalyzing = ref<boolean>(false);
+const isSaving = ref<boolean>(false);
+const saveSuccess = ref<string>("");
+const saveError = ref<string>("");
+const aiWarning = ref<string>("");
+
+// Human-in-the-loop review items
+const proposedActivities = ref<ActivityItem[]>([]);
+const hasAnalyzed = ref<boolean>(false);
+
+// Summary & History state
+const summary = ref<any>(null);
+const historyActivities = ref<ActivityItem[]>([]);
+const historyLoading = ref<boolean>(false);
+const historyFilterDay = ref<string>("");
 
 function uid() {
   return crypto.randomUUID();
 }
 
-const day = ref<string>(new Date().toISOString().slice(0, 10));
-const text = ref<string>("");
-const projects = ref<string[]>([]);
-const rows = ref<Row[]>([]);
-const loadingAi = ref<boolean>(false);
-const saving = ref<boolean>(false);
-const msg = ref<string>("");
-const logoutLoading = ref<boolean>(false);
-const me = ref<Me | null>(null);
-
-const meLabel = computed(() => {
-  if (!me.value) return "";
-  return (me.value.full_name?.trim() || me.value.email || "").trim();
-});
-
-const meRoleLabel = computed(() => {
-  const r = me.value?.role;
-  if (r === "pm") return "CP";
-  if (r === "dev") return "Dev";
-  return "";
-});
-
-// ---- Month panel state
-const monthDays = ref<MonthDayItem[]>([]);
-const loadingMonth = ref(false);
-const monthError = ref<string>("");
-
-// Anti-perte
-const lastSavedSnapshot = ref<string>("");
-
-// ---- Day change controller
-const changingDay = ref(false);
-let lastDayBeforeInput = day.value;
-
-function onDayInputFocus() {
-  lastDayBeforeInput = day.value;
-}
-
-async function onDayInputChange(e: Event) {
-  const wanted = (e.target as HTMLInputElement)?.value;
-  if (!wanted || wanted === lastDayBeforeInput) return;
-
-  day.value = lastDayBeforeInput;
-  await changeDay(wanted);
-}
-
-async function changeDay(targetDay: string, opts?: { force?: boolean }) {
-  if (!targetDay || targetDay === day.value) return;
-  if (changingDay.value) return;
-
-  if (!opts?.force && isDirty.value) {
-    const ok = window.confirm(
-      "Tu as des modifications non sauvegardées. Changer de jour va les perdre.\n\nOK = changer quand même\nAnnuler = rester ici"
-    );
-    if (!ok) return;
+function hoursToDays(hours: number): number {
+  const h = Math.max(0, Number(hours || 0));
+  const raw = h / HOURS_PER_DAY;
+  if (raw <= 0) return 0;
+  let closest: number = ALLOWED_DAY_CHARGES[0]!;
+  let minDiff = Math.abs(raw - closest);
+  for (const step of ALLOWED_DAY_CHARGES) {
+    const diff = Math.abs(raw - step);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = step;
+    }
   }
+  return closest;
+}
 
-  changingDay.value = true;
+function checkDurationHelper(hours: number): string | null {
+  const h = Math.max(0, Number(hours || 0));
+  const rawDays = Math.round((h / HOURS_PER_DAY) * 1000) / 1000;
+  const isExact = ALLOWED_DAY_CHARGES.some((v) => Math.abs(v - rawDays) < 1e-4);
+  if (!isExact && h > 0) {
+    return `Cette durée (${h}h) correspond à ${rawDays} jour. Choisissez la charge Excel la plus proche ou ajustez la durée.`;
+  }
+  return null;
+}
+
+// Computeds
+const meLabel = computed(() => me.value?.full_name?.trim() || me.value?.email || "Développeur");
+const meRoleLabel = computed(() => (me.value?.role === "pm" ? "Chef de Projet (CP)" : "Développeur"));
+
+const totalDayHours = computed(() => {
+  return Math.round(proposedActivities.value.reduce((acc, a) => acc + (Number(a.hours) || 0), 0) * 100) / 100;
+});
+
+const totalDayDays = computed(() => {
+  return Math.round((totalDayHours.value / HOURS_PER_DAY) * 1000) / 1000;
+});
+
+const isOverDailyTarget = computed(() => totalDayHours.value > HOURS_PER_DAY);
+
+// Example prompt helpers
+function applyPromptExample(exampleText: string) {
+  naturalText.value = exampleText;
+}
+
+// 1. Natural Language Parse via Mistral / Backend
+async function analyzeActivity() {
+  if (!naturalText.value.trim()) return;
+
+  saveSuccess.value = "";
+  saveError.value = "";
+  aiWarning.value = "";
+  isAnalyzing.value = true;
+
   try {
-    day.value = targetDay;
-    await loadDayFromApi(targetDay);
-    await loadMonth();
+    const { data } = await api.post("/api/v2/ai/parse-natural", {
+      text: naturalText.value,
+      day: selectedDay.value,
+    });
+
+    if (data?.success && Array.isArray(data.activities)) {
+      proposedActivities.value = data.activities.map((a: any) => ({
+        id: uid(),
+        date: a.date || selectedDay.value,
+        ticket: a.ticket || "",
+        flux: a.flux || "",
+        subject: a.subject || "",
+        project: a.project || "AX",
+        type: a.type || "Projet - Evo",
+        hours: Number(a.hours || 0),
+        days: Number(a.days || hoursToDays(Number(a.hours || 0))),
+        helperMessage: checkDurationHelper(Number(a.hours || 0)),
+        devOpsUrl: a.ticket ? `https://scp-tma-flux.visualstudio.com/Gestion%20des%20tickets/_workitems/edit/${a.ticket}` : null,
+      }));
+
+      hasAnalyzed.value = true;
+      if (data.warningMessage) {
+        aiWarning.value = data.warningMessage;
+      }
+    }
+  } catch (e: any) {
+    saveError.value = e?.response?.data?.error || e.message || "Erreur lors de l'analyse.";
   } finally {
-    changingDay.value = false;
+    isAnalyzing.value = false;
   }
 }
 
-// --------------------
-// Temps en jours (UI)
-// --------------------
-const DAY_STEP = 0.25;
-const MAX_DAYS_PER_ROW = 1;
-const HOURS_PER_DAY = 7;
-
-// Options 0 -> 1J par pas de 0.25
-const DAY_OPTIONS = computed(() => {
-  const out: number[] = [];
-  for (let v = 0; v <= MAX_DAYS_PER_ROW + 1e-9; v += DAY_STEP) {
-    out.push(Math.round(v / DAY_STEP) * DAY_STEP);
-  }
-  return out;
-});
-
-function clampToDayStep(x: number) {
-  const n = Number(x ?? 0);
-  if (!Number.isFinite(n)) return 0;
-  const clamped = Math.min(Math.max(n, 0), MAX_DAYS_PER_ROW);
-  return Math.round(clamped / DAY_STEP) * DAY_STEP;
+// Update hours on a card
+function updateActivityHours(item: ActivityItem, val: number) {
+  item.hours = Math.max(0, Number(val || 0));
+  item.days = hoursToDays(item.hours);
+  item.helperMessage = checkDurationHelper(item.hours);
 }
 
-// clamp heures au quart d’heure (utile si l’API renvoie 1.333 etc)
-const HOUR_STEP = 0.25;
-const MAX_HOURS_PER_ROW = 24;
-function clampToHourStep(x: number) {
-  const n = Number(x ?? 0);
-  if (!Number.isFinite(n)) return 0;
-  const clamped = Math.min(Math.max(n, 0), MAX_HOURS_PER_ROW);
-  return Math.round(clamped / HOUR_STEP) * HOUR_STEP;
+// Update days on a card
+function updateActivityDays(item: ActivityItem, val: number) {
+  item.days = Number(val || 0);
+  item.hours = Math.round(item.days * HOURS_PER_DAY * 100) / 100;
+  item.helperMessage = null;
 }
 
-function hToJ(h: number) {
-  return clampToDayStep(clampToHourStep(Number(h || 0)) / HOURS_PER_DAY);
+// Add empty activity
+function addActivity() {
+  proposedActivities.value.push({
+    id: uid(),
+    date: selectedDay.value,
+    ticket: "",
+    flux: "",
+    subject: "Nouvelle activité",
+    project: "AX",
+    type: "Projet - Evo",
+    hours: 1.75,
+    days: 0.25,
+    helperMessage: null,
+  });
+  hasAnalyzed.value = true;
 }
 
-function jToH(j: number) {
-  const h = Number(j || 0) * HOURS_PER_DAY;
-  return clampToHourStep(h);
-}
-
-const totalDays = computed(() =>
-  rows.value.reduce((acc, r) => acc + (Number(r.temps_passe_j) || 0), 0)
-);
-
-const totalHours = computed(() =>
-  Math.round(totalDays.value * HOURS_PER_DAY * 10) / 10
-);
-
-const monthTitle = computed(() => {
-  const d = new Date(day.value);
-  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-});
-
-const filledDaysCount = computed(() =>
-  monthDays.value.filter((d) => d.status === "filled").length
-);
-
-const missingDaysCount = computed(() =>
-  monthDays.value.filter((d) => d.status === "empty").length
-);
-
-const monthTotalHours = computed(() =>
-  monthDays.value
-    .reduce((acc, d) => acc + (Number(d.totalHours) || 0), 0)
-    .toFixed(1)
-);
-
-function snapshotCurrent() {
-  return JSON.stringify({
-    day: day.value,
-    text: text.value,
-    rows: rows.value.map(({ id, ...rest }) => rest),
+// Duplicate activity
+function duplicateActivity(index: number) {
+  const source = proposedActivities.value[index];
+  if (!source) return;
+  proposedActivities.value.splice(index + 1, 0, {
+    ...source,
+    id: uid(),
   });
 }
 
-const isDirty = computed(() => snapshotCurrent() !== lastSavedSnapshot.value);
-
-// ---- Helpers dates
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-function toYYYYMMDD(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-function getDaysInMonth(year: number, month1to12: number) {
-  return new Date(year, month1to12, 0).getDate();
-}
-const WEEKDAYS_FR = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"] as const;
-
-function weekdayLabelFR(date: Date): string {
-  return WEEKDAYS_FR[date.getDay()] ?? "??";
-}
-function isWeekendDate(date: Date) {
-  const w = date.getDay();
-  return w === 0 || w === 6;
-}
-function isCurrentMonthSelected() {
-  const selected = new Date(day.value);
-  const now = new Date();
-  return (
-    selected.getFullYear() === now.getFullYear() &&
-    selected.getMonth() === now.getMonth()
-  );
-}
-
-// --------------------
-// Rows helpers
-// --------------------
-function newEmptyRow(): Row {
-  return {
-    id: uid(),
-    day: day.value,
-    id_ticket: "",
-    sujet: "",
-    projet: "",
-    temps_passe_h: 0,
-    temps_passe_j: 0,
-    type: "Non défini",
-    impute: "",
-  };
-}
-
-function addRow() {
-  msg.value = "";
-  rows.value.push(newEmptyRow());
-}
-
-function duplicateRow(index: number) {
-  msg.value = "";
-  const r = rows.value[index];
-  if (!r) return;
-
-  rows.value.splice(index + 1, 0, {
-    ...r,
-    id: uid(),
-    day: day.value,
-  });
-}
-
-function removeRow(index: number) {
-  msg.value = "";
-  rows.value.splice(index, 1);
-}
-
-function clearAll() {
-  text.value = "";
-  msg.value = "";
-  loadingAi.value = false;
-}
-
-async function ensureAuthedOrRedirect() {
-  const { data } = await supabase.auth.getSession();
-  if (!data?.session) {
-    await router.push("/login");
+// Remove activity
+function removeActivity(index: number) {
+  proposedActivities.value.splice(index, 1);
+  if (proposedActivities.value.length === 0) {
+    hasAnalyzed.value = false;
   }
 }
 
-async function loadProjects() {
-  msg.value = "";
+// Reset form
+function resetSaisie() {
+  naturalText.value = "";
+  proposedActivities.value = [];
+  hasAnalyzed.value = false;
+  saveSuccess.value = "";
+  saveError.value = "";
+  aiWarning.value = "";
+}
+
+// 2. Save Activities (Human-in-the-loop confirmation)
+async function saveActivities() {
+  if (proposedActivities.value.length === 0) return;
+
+  isSaving.value = true;
+  saveSuccess.value = "";
+  saveError.value = "";
+
   try {
-    const { data } = await api.get("/api/projects");
-    projects.value = (data?.projects ?? []) as string[];
-  } catch (e: any) {
-    msg.value =
-      e?.response?.data?.error || e?.message || "Erreur chargement projects";
-  }
-}
-
-// ---- API parsing helpers
-function coerceRows(payload: any): any[] {
-  if (payload?.rows && Array.isArray(payload.rows)) return payload.rows;
-  if (payload?.activities && Array.isArray(payload.activities))
-    return payload.activities;
-  if (Array.isArray(payload)) return payload;
-  return [];
-}
-
-function buildMonthDaysFromActivities(year: number, month: number, activities: any[]) {
-  const daysCount = getDaysInMonth(year, month);
-
-  const byDay = new Map<string, any[]>();
-  for (const a of activities) {
-    if (!a?.day) continue;
-    if (!byDay.has(a.day)) byDay.set(a.day, []);
-    byDay.get(a.day)!.push(a);
-  }
-
-  const result: MonthDayItem[] = [];
-  for (let dayNumber = 1; dayNumber <= daysCount; dayNumber++) {
-    const d = new Date(year, month - 1, dayNumber);
-    const yyyyMMdd = toYYYYMMDD(d);
-    const weekend = isWeekendDate(d);
-
-    const dayActs = byDay.get(yyyyMMdd) ?? [];
-    const total = dayActs.reduce((acc, r) => acc + (Number(r.temps_passe_h) || 0), 0);
-
-    let status: MonthDayStatus = "empty";
-    if (weekend) status = "weekend";
-    else if (dayActs.length > 0) status = "filled";
-
-    result.push({
-      day: yyyyMMdd,
-      dayNumber,
-      weekdayLabel: weekdayLabelFR(d),
-      isWeekend: weekend,
-      status,
-      totalHours: Number(total.toFixed(1)),
-      linesCount: dayActs.length,
-    });
-  }
-
-  return result;
-}
-
-function buildMonthDaysFromAggregatedDays(year: number, month: number, payload: any) {
-  const daysCount = getDaysInMonth(year, month);
-  const map = new Map<string, { totalHours?: number; linesCount?: number }>();
-
-  if (Array.isArray(payload?.days)) {
-    for (const d of payload.days) {
-      if (d?.day) map.set(d.day, { totalHours: d.totalHours, linesCount: d.linesCount });
-    }
-  }
-
-  const result: MonthDayItem[] = [];
-  for (let dayNumber = 1; dayNumber <= daysCount; dayNumber++) {
-    const d = new Date(year, month - 1, dayNumber);
-    const yyyyMMdd = toYYYYMMDD(d);
-    const weekend = isWeekendDate(d);
-    const agg = map.get(yyyyMMdd);
-
-    const total = Number(agg?.totalHours ?? 0);
-    const count = Number(agg?.linesCount ?? 0);
-
-    let status: MonthDayStatus = "empty";
-    if (weekend) status = "weekend";
-    else if (count > 0) status = "filled";
-
-    result.push({
-      day: yyyyMMdd,
-      dayNumber,
-      weekdayLabel: weekdayLabelFR(d),
-      isWeekend: weekend,
-      status,
-      totalHours: Number(total.toFixed(1)),
-      linesCount: count,
-    });
-  }
-
-  return result;
-}
-
-async function loadMonth() {
-  loadingMonth.value = true;
-  monthError.value = "";
-  try {
-    const d = new Date(day.value);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-
-    const { data } = await api.get("/api/activities/month", { params: { year, month } });
-
-    if (data?.days) {
-      monthDays.value = buildMonthDaysFromAggregatedDays(year, month, data);
-      return;
-    }
-
-    const activities = coerceRows(data?.activities ?? data);
-    monthDays.value = buildMonthDaysFromActivities(year, month, activities);
-  } catch (e: any) {
-    monthError.value = e?.response?.data?.error || e?.message || "Erreur chargement mois";
-  } finally {
-    loadingMonth.value = false;
-  }
-}
-
-async function loadDayFromApi(targetDay: string) {
-  msg.value = "";
-  try {
-    const { data } = await api.get("/api/activities/day", { params: { day: targetDay } });
-
-    rows.value = coerceRows(data).map((r: any) => {
-      const id_ticket = r.id_ticket ?? "";
-      const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
-      const j = clampToDayStep(
-        Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
-      );
-
-      return {
-        id: uid(),
-        day: targetDay,
-        id_ticket,
-        sujet: r.sujet ?? "",
-        projet: r.projet ?? "",
-        temps_passe_h: h,
-        temps_passe_j: j,
-        type: (r.type ?? "Non défini") as ActivityType,
-        impute: r.impute ?? "",
-      };
+    const { data } = await api.post("/api/v2/activities", {
+      day: selectedDay.value,
+      activities: proposedActivities.value,
     });
 
-    text.value = "";
-    lastSavedSnapshot.value = snapshotCurrent();
-  } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur chargement jour";
-  }
-}
-
-function rowFingerprint(r: Pick<Row, "sujet" | "projet" | "temps_passe_j" | "type">) {
-  return [
-    (r.sujet ?? "").trim().toLowerCase(),
-    (r.projet ?? "").trim().toLowerCase(),
-    String(clampToDayStep(Number(r.temps_passe_j ?? 0))),
-    r.type,
-  ].join("|");
-}
-
-async function parseAi() {
-  msg.value = "";
-  loadingAi.value = true;
-  try {
-    const existing = rows.value.map((r) => ({ ...r }));
-
-    const { data } = await api.post("/api/ai/parse", {
-      day: day.value,
-      text: text.value,
-      knownProjects: projects.value,
-    });
-
-    const generatedRaw = (data?.rows ?? []) as any[];
-
-    const generated: Row[] = generatedRaw.map((r) => {
-      const id_ticket = r.id_ticket ?? "";
-      const h = clampToHourStep(Number(r.temps_passe_h ?? 0));
-      const j = clampToDayStep(
-        Number.isFinite(Number(r.temps_passe_j)) ? Number(r.temps_passe_j) : hToJ(h)
-      );
-
-      return {
-        id: uid(),
-        day: day.value,
-        id_ticket,
-        sujet: r.sujet ?? "",
-        projet: r.projet ?? "",
-        temps_passe_h: h,
-        temps_passe_j: j,
-        type: (r.type ?? "Non défini") as ActivityType,
-        impute: r.impute ?? "",
-      };
-    });
-
-    const seen = new Set(existing.map((r) => rowFingerprint(r)));
-    const toAdd = generated.filter((r) => {
-      const fp = rowFingerprint(r);
-      if (seen.has(fp)) return false;
-      seen.add(fp);
-      return true;
-    });
-
-    rows.value = [...existing, ...toAdd];
-
-    if (toAdd.length === 0) {
-      msg.value = "ℹ️ L’IA n’a rien ajouté (doublons).";
+    if (data?.success) {
+      saveSuccess.value = `✅ Journée du ${selectedDay.value} validée et enregistrée ! (Simulation SharePoint : Tableau6245781824)`;
+      await loadSummary();
+      await loadHistory();
     }
   } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur IA";
+    saveError.value = e?.response?.data?.error || e.message || "Erreur lors de l'enregistrement.";
   } finally {
-    loadingAi.value = false;
+    isSaving.value = false;
   }
 }
 
-async function saveDay() {
-  msg.value = "";
-  saving.value = true;
+// Load personal summary
+async function loadSummary() {
   try {
-    const { data } = await api.post("/api/activities/upsertDay", {
-      day: day.value,
-      rows: rows.value.map(({ id, id_ticket, ...rest }) => {
-        const j = clampToDayStep(Number(rest.temps_passe_j ?? 0));
-        const h = jToH(j);
-
-        return {
-          ...rest,
-          id_ticket: String(id_ticket ?? "").trim(),
-          temps_passe_j: j,      // UI
-          temps_passe_h: h,      // DB (autorité)
-        };
-      }),
+    const { data } = await api.get("/api/v2/activities/summary", {
+      params: { date: selectedDay.value },
     });
+    if (data?.summary) {
+      summary.value = data.summary;
+    }
+  } catch (e) {
+    console.warn("Erreur chargement résumé personnel:", e);
+  }
+}
 
-    msg.value = `✅ Sauvegardé (${data?.inserted ?? 0} lignes)`;
-    lastSavedSnapshot.value = snapshotCurrent();
-    await loadMonth();
-  } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur sauvegarde";
+// Load activities history
+async function loadHistory() {
+  historyLoading.value = true;
+  try {
+    const { data } = await api.get("/api/v2/activities", {
+      params: {
+        day: historyFilterDay.value ? historyFilterDay.value : undefined,
+      },
+    });
+    if (data?.activities) {
+      historyActivities.value = data.activities;
+    }
+  } catch (e) {
+    console.warn("Erreur chargement historique:", e);
   } finally {
-    saving.value = false;
+    historyLoading.value = false;
   }
 }
 
-async function selectDayFromMonthPanel(targetDay: string) {
-  await changeDay(targetDay);
-}
-
-async function logout() {
-  if (logoutLoading.value) return;
-  logoutLoading.value = true;
+// Delete activity from history
+async function deleteHistoryItem(id: string) {
+  if (!confirm("Voulez-vous supprimer cette ligne d'activité ?")) return;
   try {
-    await supabase.auth.signOut();
-    clearMeCache();
-    await router.push("/login");
-  } finally {
-    logoutLoading.value = false;
-  }
-}
-
-const canExport = computed(() => true);
-const exportHint = computed(() => {
-  if (!isCurrentMonthSelected()) return "";
-  return "⚠️ Mois en cours : l’export est possible même si tout n’est pas rempli.";
-});
-
-async function exportCsv() {
-  msg.value = "";
-  try {
-    const d = new Date(day.value);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-
-    const resp = await api.get("/api/activities/export", {
-      params: { year, month },
-      responseType: "blob",
-    });
-
-    const blob = new Blob([resp.data], { type: "text/csv;charset=utf-8;" });
-    const url = window.URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `activities_${year}-${String(month).padStart(2, "0")}.csv`;
-    a.click();
-
-    window.URL.revokeObjectURL(url);
+    await api.delete(`/api/v2/activities/${id}`);
+    await loadHistory();
+    await loadSummary();
   } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur export CSV";
+    alert(e?.message || "Erreur suppression");
   }
 }
 
-async function exportXlsx() {
-  msg.value = "";
-  try {
-    const d = new Date(day.value);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-
-    const resp = await api.get("/api/activities/export-xlsx", {
-      params: { year, month },
-      responseType: "blob",
-    });
-
-    const blob = new Blob([resp.data], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const url = window.URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `activities_${year}-${String(month).padStart(2, "0")}.xlsx`;
-    a.click();
-
-    window.URL.revokeObjectURL(url);
-  } catch (e: any) {
-    msg.value = e?.response?.data?.error || e?.message || "Erreur export Excel";
-  }
+// Logout
+async function handleLogout() {
+  await supabase.auth.signOut();
+  clearMeCache();
+  router.push("/login");
 }
 
 onMounted(async () => {
-  await ensureAuthedOrRedirect();
-
-  try {
-    me.value = await ensureMe();
-  } catch {
-    me.value = null;
+  const profile = await ensureMe();
+  if (!profile) {
+    router.push("/login");
+    return;
   }
-
-  await loadProjects();
-  await loadMonth();
-  await loadDayFromApi(day.value);
+  me.value = profile;
+  await loadSummary();
+  await loadHistory();
 });
 </script>
 
-
 <template>
-  <div class="min-h-screen bg-zinc-950 text-zinc-100">
-    <div class="max-w-6xl mx-auto p-6">
-      <!-- Header -->
-      <header class="flex items-center justify-between mb-6">
-        <div>
-          <h1 class="text-2xl font-semibold">Feuille d’activité</h1>
-          <p class="text-zinc-400 text-sm">Une phrase → lignes prêtes → sauvegarde</p>
+  <div class="min-h-screen bg-zinc-950 text-zinc-100 pb-16">
+    
+    <!-- Top Header & Navigation -->
+    <header class="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur sticky top-0 z-20 px-6 py-3.5">
+      <div class="max-w-6xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+        
+        <!-- Brand & Title -->
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">
+            A
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-base font-bold text-white tracking-tight">Activity AI</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase">
+                ● Simulation locale (SharePoint Mock)
+              </span>
+            </div>
+            <p class="text-xs text-zinc-400">Saisie & Synchronisation d’activité Keyrus</p>
+          </div>
         </div>
 
-        <div class="flex items-center gap-4">
-          <!-- 👤 Utilisateur connecté -->
-          <div v-if="me" class="text-right leading-tight">
-            <div class="text-sm font-semibold">
-              {{ meLabel }}
-            </div>
-            <div class="text-xs text-zinc-400">
-              {{ meRoleLabel }}
-            </div>
-          </div>
-
-          <!-- ⚠️ Modifs non sauvegardées -->
-          <div
-            v-if="isDirty"
-            class="text-xs text-amber-300/90 border border-amber-700/40 px-2 py-1 rounded-lg"
+        <!-- Navigation Tabs -->
+        <nav class="flex items-center gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 text-xs font-medium">
+          <button
+            @click="currentTab = 'saisie'"
+            class="px-3 py-1.5 rounded-lg transition"
+            :class="currentTab === 'saisie' ? 'bg-zinc-800 text-white font-semibold shadow' : 'text-zinc-400 hover:text-zinc-200'"
           >
-            Modifs non sauvegardées
-          </div>
+            ✍️ Saisir mon activité
+          </button>
+          <button
+            @click="currentTab = 'historique'; loadHistory()"
+            class="px-3 py-1.5 rounded-lg transition"
+            :class="currentTab === 'historique' ? 'bg-zinc-800 text-white font-semibold shadow' : 'text-zinc-400 hover:text-zinc-200'"
+          >
+            📋 Mes activités
+          </button>
+          <button
+            @click="currentTab = 'dashboard'; loadSummary()"
+            class="px-3 py-1.5 rounded-lg transition"
+            :class="currentTab === 'dashboard' ? 'bg-zinc-800 text-white font-semibold shadow' : 'text-zinc-400 hover:text-zinc-200'"
+          >
+            📊 Mon bilan
+          </button>
+        </nav>
 
-          <!-- POC SharePoint -->
+        <!-- User profile & Lab link -->
+        <div class="flex items-center gap-3">
+          <!-- Laboratory link (Tech Diagnostic POC) -->
           <router-link
             to="/sharepoint-poc"
-            class="rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 px-3 py-2 text-sm font-medium hover:bg-blue-500/30 transition"
+            class="px-2.5 py-1 rounded-lg text-xs font-medium bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 transition flex items-center gap-1.5"
+            title="Outil de test et diagnostic technique Microsoft Graph / SharePoint"
           >
-            POC SharePoint
+            <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+            <span>Lab Diagnostic POC</span>
           </router-link>
 
-          <!-- Dashboard CP (PM only) -->
-          <button
-            v-if="me?.role === 'pm'"
-            @click="router.push('/pm')"
-            class="rounded-xl bg-emerald-400 text-zinc-950 px-3 py-2 text-sm font-medium"
-          >
-            Dashboard CP
-          </button>
+          <!-- User Pill -->
+          <div class="text-xs text-right hidden sm:block">
+            <div class="font-semibold text-zinc-200">{{ meLabel }}</div>
+            <div class="text-[11px] text-zinc-500">{{ meRoleLabel }}</div>
+          </div>
 
-          <!-- 🚪 Logout -->
           <button
-            @click="logout"
-            :disabled="logoutLoading"
-            class="text-zinc-300 hover:text-white text-sm disabled:opacity-50"
+            @click="handleLogout"
+            class="px-2.5 py-1 rounded-lg text-xs bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 transition"
           >
-            {{ logoutLoading ? "Déconnexion..." : "Déconnexion" }}
+            Sortir
           </button>
         </div>
-      </header>
 
-      <!-- Layout -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <!-- Mois en cours -->
-        <aside class="lg:col-span-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-          <div class="flex items-center justify-between gap-2">
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-6xl mx-auto px-6 pt-6 space-y-6">
+
+      <!-- Mini-Dashboard Summary Cards -->
+      <section class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+        
+        <!-- Aujourd'hui -->
+        <div class="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 relative overflow-hidden">
+          <div class="flex items-center justify-between text-zinc-400 mb-1">
+            <span>Aujourd'hui</span>
+            <span class="font-mono text-zinc-500">{{ summary?.referenceDate || selectedDay }}</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-white">{{ summary?.today?.hours || 0 }} h</span>
+            <span class="text-zinc-400 text-xs">/ 7 h</span>
+            <span class="ml-auto font-medium text-emerald-400">({{ summary?.today?.days || 0 }} j)</span>
+          </div>
+          <div class="w-full bg-zinc-800 h-1.5 rounded-full mt-3 overflow-hidden">
+            <div
+              class="h-full bg-blue-500 rounded-full transition-all"
+              :style="{ width: `${Math.min(100, ((summary?.today?.hours || 0) / 7) * 100)}%` }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Cette Semaine -->
+        <div class="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 relative overflow-hidden">
+          <div class="flex items-center justify-between text-zinc-400 mb-1">
+            <span>Cette semaine</span>
+            <span class="font-mono text-zinc-500">Objectif 35 h</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-white">{{ summary?.week?.hours || 0 }} h</span>
+            <span class="text-zinc-400 text-xs">/ 35 h</span>
+            <span class="ml-auto font-medium text-emerald-400">({{ summary?.week?.days || 0 }} j)</span>
+          </div>
+          <div class="w-full bg-zinc-800 h-1.5 rounded-full mt-3 overflow-hidden">
+            <div
+              class="h-full bg-indigo-500 rounded-full transition-all"
+              :style="{ width: `${Math.min(100, ((summary?.week?.hours || 0) / 35) * 100)}%` }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Ce Mois -->
+        <div class="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 relative overflow-hidden">
+          <div class="flex items-center justify-between text-zinc-400 mb-1">
+            <span>Ce mois-ci</span>
+            <span class="font-mono text-zinc-500">Cumul</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-white">{{ summary?.month?.hours || 0 }} h</span>
+            <span class="ml-auto font-medium text-emerald-400">({{ summary?.month?.days || 0 }} j)</span>
+          </div>
+          <div class="w-full bg-zinc-800 h-1.5 rounded-full mt-3 overflow-hidden">
+            <div class="h-full bg-emerald-500 rounded-full w-full"></div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- TAB 1: SAISIE D'ACTIVITÉ -->
+      <section v-if="currentTab === 'saisie'" class="space-y-6">
+
+        <!-- Banner messages -->
+        <div v-if="saveSuccess" class="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-800 text-emerald-300 text-xs flex items-center justify-between">
+          <span>{{ saveSuccess }}</span>
+          <button @click="saveSuccess = ''" class="text-emerald-400 hover:text-emerald-200">✕</button>
+        </div>
+
+        <div v-if="saveError" class="p-4 rounded-2xl bg-red-950/40 border border-red-800 text-red-300 text-xs flex items-center justify-between">
+          <span>{{ saveError }}</span>
+          <button @click="saveError = ''" class="text-red-400 hover:text-red-200">✕</button>
+        </div>
+
+        <!-- Main Prompt Card -->
+        <div class="rounded-2xl bg-zinc-900/70 border border-zinc-800 p-6 space-y-5 shadow-xl">
+          
+          <div class="flex items-center justify-between flex-wrap gap-3">
             <div>
-              <h2 class="font-semibold capitalize">{{ monthTitle }}</h2>
-              <p class="text-zinc-400 text-xs">
-                ✔ {{ filledDaysCount }} / ❌ {{ missingDaysCount }} — Total {{ monthTotalHours }}h
-              </p>
+              <h2 class="text-lg font-bold text-white">Bonjour {{ meLabel }} 👋</h2>
+              <p class="text-xs text-zinc-400 mt-0.5">Qu'as-tu fait aujourd'hui ?</p>
             </div>
 
-            <div class="flex flex-col items-end gap-2">
-              <div class="flex gap-2">
-                <button
-                  @click="exportCsv"
-                  :disabled="!canExport"
-                  class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
-                  title="Exporter le mois affiché (CSV)"
-                >
-                  Export CSV
-                </button>
-
-                <button
-                  @click="exportXlsx"
-                  :disabled="!canExport"
-                  class="rounded-xl bg-emerald-400 text-zinc-950 px-3 py-2 text-sm font-medium disabled:opacity-50"
-                  title="Exporter le mois affiché (Excel)"
-                >
-                  Export Excel
-                </button>
-              </div>
-
-              <div v-if="exportHint" class="text-[11px] text-amber-300/80">
-                {{ exportHint }}
-              </div>
-            </div>
-          </div>
-
-          <p v-if="monthError" class="mt-3 text-sm text-red-300">
-            {{ monthError }}
-          </p>
-
-          <div class="mt-4">
-            <div v-if="loadingMonth" class="text-sm text-zinc-400">Chargement du mois…</div>
-
-            <ul v-else class="space-y-2 max-h-[65vh] overflow-auto pr-1">
-              <li
-                v-for="d in monthDays"
-                :key="d.day"
-                @click="selectDayFromMonthPanel(d.day)"
-                class="flex items-center justify-between gap-3 p-2 rounded-xl border border-zinc-800 hover:bg-zinc-800/40 cursor-pointer"
-                :class="day === d.day ? 'bg-zinc-800/60 border-zinc-700' : ''"
-              >
-                <div class="flex items-center gap-3">
-                  <div class="w-12 text-center">
-                    <div class="text-xs text-zinc-400">{{ d.weekdayLabel }}</div>
-                    <div class="text-base font-semibold">{{ d.dayNumber }}</div>
-                  </div>
-
-                  <div class="text-sm">
-                    <div class="flex items-center gap-2">
-                      <span
-                        class="px-2 py-0.5 rounded-full text-xs border"
-                        :class="{
-                          'bg-zinc-700/40 text-zinc-200 border-zinc-700': d.status === 'weekend',
-                          'bg-emerald-500/15 text-emerald-200 border-emerald-700/40': d.status === 'filled',
-                          'bg-red-500/10 text-red-200 border-red-700/40': d.status === 'empty',
-                        }"
-                      >
-                        <template v-if="d.status === 'weekend'">Week-end</template>
-                        <template v-else-if="d.status === 'filled'">✔ Rempli</template>
-                        <template v-else>❌ Vide</template>
-                      </span>
-
-                      <span class="text-xs text-zinc-400">{{ d.linesCount }} ligne(s)</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="text-right">
-                  <div class="text-sm font-semibold">{{ d.totalHours }}h</div>
-                  <div class="text-[11px] text-zinc-500 font-mono">{{ d.day }}</div>
-                </div>
-              </li>
-            </ul>
-          </div>
-        </aside>
-
-        <!-- Colonne principale -->
-        <section class="lg:col-span-8 min-w-0">
-          <div class="grid gap-4">
-            <!-- Input -->
-            <div class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4">
-              <div class="flex flex-wrap gap-3 items-center mb-3">
-                <label class="text-sm text-zinc-400">Jour</label>
+            <!-- Date Selector & Mode Toggle -->
+            <div class="flex items-center gap-3">
+              <div class="flex items-center gap-1 bg-zinc-950 px-3 py-1.5 rounded-xl border border-zinc-800 text-xs">
+                <span class="text-zinc-500">Date :</span>
                 <input
-                  v-model="day"
+                  v-model="selectedDay"
                   type="date"
-                  @focus="onDayInputFocus"
-                  @change="onDayInputChange"
-                  class="rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2"
+                  class="bg-transparent text-zinc-200 font-medium outline-none cursor-pointer"
                 />
               </div>
 
-              <label class="text-sm text-zinc-400">Décris ta journée</label>
-              <textarea
-                v-model="text"
-                class="w-full mt-2 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 min-h-[110px] outline-none"
-                placeholder="Ex: Matin incident applicatif. Aprem evol AMP lot2. Total 1J."
-              />
-
-              <div class="flex gap-3 mt-3">
+              <div class="flex items-center bg-zinc-950 p-0.5 rounded-xl border border-zinc-800 text-xs">
                 <button
-                  @click="parseAi"
-                  :disabled="loadingAi || !text.trim()"
-                  class="rounded-xl bg-white text-zinc-950 font-medium px-4 py-2 disabled:opacity-50"
+                  @click="inputMode = 'ai'"
+                  class="px-2.5 py-1 rounded-lg transition"
+                  :class="inputMode === 'ai' ? 'bg-blue-600 text-white font-semibold' : 'text-zinc-400'"
                 >
-                  {{ loadingAi ? "Analyse..." : "✨ Générer" }}
+                  ✨ Assistant IA
                 </button>
-
                 <button
-                  type="button"
-                  class="btn-secondary"
-                  :disabled="!text && !msg"
-                  @click="clearAll"
+                  @click="inputMode = 'manual'; if (proposedActivities.length === 0) addActivity()"
+                  class="px-2.5 py-1 rounded-lg transition"
+                  :class="inputMode === 'manual' ? 'bg-zinc-800 text-white font-semibold' : 'text-zinc-400'"
                 >
-                  Effacer et repartir de zéro
+                  ✍️ Saisie Manuelle
                 </button>
-
-                <button
-                  @click="saveDay"
-                  :disabled="saving || rows.length === 0"
-                  class="rounded-xl bg-emerald-400 text-zinc-950 font-medium px-4 py-2 disabled:opacity-50"
-                >
-                  {{ saving ? "Sauvegarde..." : "💾 Sauver" }}
-                </button>
-              </div>
-
-              <p v-if="msg" class="mt-3 text-sm text-zinc-300">{{ msg }}</p>
-            </div>
-
-            <!-- Preview -->
-            <div v-if="rows.length" class="rounded-2xl bg-zinc-900/60 border border-zinc-800 p-4 min-w-0">
-              <div class="flex items-center justify-between mb-3">
-                <div class="flex items-center gap-2">
-                  <h2 class="font-semibold">Prévisualisation</h2>
-
-                  <button
-                    @click="addRow"
-                    class="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-1 text-xs hover:bg-zinc-900"
-                  >
-                    ➕ Ajouter une ligne
-                  </button>
-                </div>
-
-                <div class="text-zinc-400 text-sm">
-                  Total : {{ totalDays.toFixed(2) }}J ({{ totalHours.toFixed(2) }}h)
-                </div>
-              </div>
-
-              <div class="overflow-x-auto overflow-y-hidden">
-                <table class="w-full text-sm table-fixed">
-                  <thead class="text-zinc-400">
-                    <tr>
-                      <th class="w-28 text-left py-2 pr-2 whitespace-nowrap">Date</th>
-                      <th class="w-32 text-left py-2 pr-2 whitespace-nowrap">ID Ticket</th>
-                      <th class="w-[20rem] text-left py-2 pr-2 whitespace-nowrap">Sujet</th>
-                      <th class="w-48 text-left py-2 pr-2 whitespace-nowrap">Projet</th>
-                      <th class="w-40 text-left py-2 pr-2 whitespace-nowrap">Charge réelle (J)</th>
-                      <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Type</th>
-                      <th class="w-44 text-left py-2 pr-2 whitespace-nowrap">Code VSA</th>
-                      <th class="w-28 text-right py-2 whitespace-nowrap">Actions</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    <tr v-for="(r, i) in rows" :key="r.id" class="border-t border-zinc-800">
-                      <!-- Date -->
-                      <td class="py-2 pr-2 whitespace-nowrap">
-                        <span class="text-[11px] font-mono text-zinc-400">{{ r.day }}</span>
-                      </td>
-
-                      <!-- ID Ticket -->
-                      <td class="py-2 pr-2">
-                        <input
-                          v-model="r.id_ticket"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          placeholder="ex: INC12345"
-                        />
-                      </td>
-
-                      <!-- Sujet -->
-                      <td class="py-2 pr-2">
-                        <input
-                          v-model="r.sujet"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                          placeholder="Ex: Incident API, Evol AMP lot2..."
-                        />
-                      </td>
-
-                      <!-- Projet (optgroups) -->
-                      <td class="py-2 pr-2">
-                        <select
-                          v-model="r.projet"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        >
-                          <option value="">(Non défini)</option>
-
-                          <optgroup v-for="g in PROJECT_GROUPS" :key="g.label" :label="g.label">
-                            <option v-for="p in g.items" :key="g.label + '-' + p" :value="p">
-                              {{ p }}
-                            </option>
-                          </optgroup>
-                        </select>
-                      </td>
-
-                      <!-- Temps -->
-                      <td class="py-2 pr-2">
-                        <select
-                          v-model.number="r.temps_passe_j"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        >
-                          <option v-for="t in DAY_OPTIONS" :key="t" :value="t">
-                            {{ String(t).replace(".", ",") }} J
-                          </option>
-                        </select>
-                      </td>
-
-                      <!-- Type -->
-                      <td class="py-2 pr-2">
-                        <select
-                          v-model="r.type"
-                          class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-2 py-1"
-                        >
-                          <optgroup label="Tickets">
-                            <option value="Evol">Evol</option>
-                            <option value="Ano">Ano</option>
-                            <option value="Incident Applicatif">Incident Applicatif</option>
-                            <option value="Projet">Projet</option>
-                            <option value="Non défini">Non défini</option>
-                          </optgroup>
-
-                          <optgroup label="Absences">
-                            <option value="Congés">Congés</option>
-                            <option value="Alternance">Alternance</option>
-                            <option value="Week-end">Week-end</option>
-                          </optgroup>
-                        </select>
-                      </td>
-
-                      <!-- Code VSA (verrouillé) -->
-                      <td class="py-2 pr-2">
-                        <input
-                          :value="r.impute"
-                          disabled
-                          class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-2 py-1 text-zinc-400 cursor-not-allowed"
-                          title="Ne pas modifier (Code VSA)"
-                        />
-                      </td>
-
-                      <!-- Actions -->
-                      <td class="py-2 text-right whitespace-nowrap">
-                        <button
-                          @click="duplicateRow(i)"
-                          class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900 mr-2"
-                          title="Dupliquer"
-                        >
-                          📄
-                        </button>
-
-                        <button
-                          @click="removeRow(i)"
-                          class="text-xs px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-900"
-                          title="Supprimer"
-                        >
-                          🗑️
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="mt-3 text-zinc-500 text-xs">
-                Astuce : mets “Non défini” uniquement si tu n’as vraiment pas l’info — sinon ça dégrade le reporting.
               </div>
             </div>
           </div>
-        </section>
-      </div>
-    </div>
+
+          <!-- Mode 1: Saisie Naturelle Assistée par IA -->
+          <div v-if="inputMode === 'ai'" class="space-y-3">
+            <div class="relative">
+              <textarea
+                v-model="naturalText"
+                rows="4"
+                class="w-full rounded-2xl bg-zinc-950 border border-zinc-800 p-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 transition resize-none"
+                placeholder="Exemple : Aujourd'hui j'ai travaillé 5h sur le ticket 594. J'ai analysé le problème, corrigé le mapping de FNA035 et fait les tests en REC..."
+              ></textarea>
+            </div>
+
+            <!-- Example chips -->
+            <div class="flex items-center gap-2 flex-wrap text-[11px] text-zinc-400">
+              <span class="text-zinc-500">Exemples rapides :</span>
+              <button
+                @click="applyPromptExample('Aujourd\'hui j\'ai travaillé 5h sur le ticket 594. J\'ai analysé le problème, corrigé le mapping de FNA035 et fait les tests en REC.')"
+                class="px-2.5 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 transition"
+              >
+                Ticket 594 (5h) + FNA035
+              </button>
+              <button
+                @click="applyPromptExample('2h sur le ticket 594 pour corriger FNA035, 3h sur le ticket 612 projet CRM et 1h30 en réunion daily')"
+                class="px-2.5 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 transition"
+              >
+                Multi-tâches (2h + 3h + 1h30)
+              </button>
+              <button
+                @click="applyPromptExample('Journée complète de 7h sur la TMA correctif plateforme AX')"
+                class="px-2.5 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 transition"
+              >
+                Journée complète (7h)
+              </button>
+            </div>
+
+            <!-- Action button -->
+            <div class="flex items-center justify-end gap-3 pt-2">
+              <button
+                v-if="naturalText"
+                @click="resetSaisie"
+                class="px-3 py-2 rounded-xl text-xs text-zinc-400 hover:text-zinc-200"
+              >
+                Effacer
+              </button>
+              <button
+                @click="analyzeActivity"
+                :disabled="isAnalyzing || !naturalText.trim()"
+                class="px-5 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition shadow-lg shadow-blue-600/20 flex items-center gap-2"
+              >
+                <span v-if="isAnalyzing">Traitement par Mistral IA...</span>
+                <span v-else>✨ Analyser mon activité</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Section Human-in-the-loop : Revue & Validation des Activités -->
+        <div v-if="hasAnalyzed || inputMode === 'manual'" class="space-y-4">
+          
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <h3 class="text-sm font-bold text-white">Analyse & Revue de ton activité (Validation humaine)</h3>
+            </div>
+            <button
+              @click="addActivity"
+              class="px-3 py-1 rounded-lg text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200"
+            >
+              + Ajouter une tâche
+            </button>
+          </div>
+
+          <!-- Non-blocking Warning if > 7h -->
+          <div v-if="isOverDailyTarget || aiWarning" class="p-3.5 rounded-xl bg-amber-950/40 border border-amber-800 text-amber-300 text-xs">
+            {{ aiWarning || `⚠️ Total journalier (${totalDayHours}h = ${totalDayDays}j) supérieur à la journée de référence (7h = 1j). Vous pouvez valider ou ajuster les durées.` }}
+          </div>
+
+          <!-- Cards for each proposed activity -->
+          <div class="space-y-3">
+            <div
+              v-for="(item, idx) in proposedActivities"
+              :key="item.id"
+              class="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800 text-xs space-y-3 transition hover:border-zinc-700"
+            >
+              <div class="flex items-center justify-between pb-2 border-b border-zinc-800/80">
+                <span class="font-bold text-zinc-300">Tâche #{{ idx + 1 }}</span>
+                <div class="flex items-center gap-2">
+                  <button
+                    @click="duplicateActivity(idx)"
+                    class="text-zinc-500 hover:text-zinc-300 text-xs"
+                    title="Dupliquer la ligne"
+                  >
+                    ⎘ Dupliquer
+                  </button>
+                  <button
+                    @click="removeActivity(idx)"
+                    class="text-red-400 hover:text-red-300 text-xs"
+                    title="Supprimer la tâche"
+                  >
+                    ✕ Supprimer
+                  </button>
+                </div>
+              </div>
+
+              <!-- Grid Fields -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                
+                <!-- Ticket ID -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">ID Ticket</label>
+                  <div class="relative">
+                    <input
+                      v-model="item.ticket"
+                      type="text"
+                      class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-200 font-mono outline-none"
+                      placeholder="594"
+                    />
+                    <a
+                      v-if="item.ticket"
+                      :href="`https://scp-tma-flux.visualstudio.com/Gestion%20des%20tickets/_workitems/edit/${item.ticket}`"
+                      target="_blank"
+                      class="absolute right-2.5 top-2 text-blue-400 hover:text-blue-300"
+                      title="Ouvrir dans Azure DevOps"
+                    >
+                      ↪
+                    </a>
+                  </div>
+                </div>
+
+                <!-- Nom Flux -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">Nom Flux</label>
+                  <input
+                    v-model="item.flux"
+                    type="text"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-amber-300 font-mono outline-none"
+                    placeholder="FNA035"
+                  />
+                </div>
+
+                <!-- Projet -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">Projet</label>
+                  <select
+                    v-model="item.project"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-200 outline-none"
+                  >
+                    <option v-for="p in ALLOWED_PROJECTS" :key="p" :value="p">{{ p }}</option>
+                  </select>
+                </div>
+
+                <!-- Type -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">Type d'activité</label>
+                  <select
+                    v-model="item.type"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-200 outline-none"
+                  >
+                    <option v-for="t in ALLOWED_TYPES" :key="t" :value="t">{{ t }}</option>
+                  </select>
+                </div>
+
+                <!-- Sujet (Large) -->
+                <div class="sm:col-span-2 md:col-span-2">
+                  <label class="text-zinc-400 block mb-1">Sujet / Description</label>
+                  <input
+                    v-model="item.subject"
+                    type="text"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-200 outline-none"
+                    placeholder="Description de la tâche..."
+                  />
+                </div>
+
+                <!-- Durée en Heures -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">Durée (heures)</label>
+                  <input
+                    :value="item.hours"
+                    @input="updateActivityHours(item, Number(($event.target as HTMLInputElement).value))"
+                    type="number"
+                    step="0.25"
+                    min="0"
+                    max="24"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-200 font-mono outline-none"
+                  />
+                </div>
+
+                <!-- Charge Excel (Jours) -->
+                <div>
+                  <label class="text-zinc-400 block mb-1">Charge Excel (jours)</label>
+                  <select
+                    :value="item.days"
+                    @change="updateActivityDays(item, Number(($event.target as HTMLSelectElement).value))"
+                    class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-2 text-emerald-400 font-semibold outline-none"
+                  >
+                    <option v-for="ch in ALLOWED_DAY_CHARGES" :key="ch" :value="ch">
+                      {{ ch }} j ({{ Math.round(ch * 7 * 100) / 100 }}h)
+                    </option>
+                  </select>
+                </div>
+
+              </div>
+
+              <!-- Duration helper alert if intermediate duration -->
+              <div v-if="item.helperMessage" class="text-[11px] text-amber-400 p-2 rounded-lg bg-amber-950/30 border border-amber-900/60">
+                💡 {{ item.helperMessage }}
+              </div>
+            </div>
+          </div>
+
+          <!-- Daily Total Bar & Final Validation -->
+          <div class="p-4 rounded-2xl bg-zinc-900/90 border border-zinc-800 flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <div class="text-xs text-zinc-400">Total de la journée :</div>
+              <div class="text-base font-bold text-white flex items-center gap-2">
+                <span>{{ totalDayHours }} h / 7 h</span>
+                <span class="text-xs font-semibold text-emerald-400">({{ totalDayDays }} jour)</span>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+              <button
+                @click="resetSaisie"
+                class="px-4 py-2 rounded-xl text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
+              >
+                Annuler
+              </button>
+              <button
+                @click="saveActivities"
+                :disabled="isSaving || proposedActivities.length === 0"
+                class="px-6 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 transition shadow-lg shadow-emerald-600/20 flex items-center gap-2"
+              >
+                <span v-if="isSaving">Enregistrement & Simulation SharePoint...</span>
+                <span v-else>✓ Valider & Enregistrer</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+      <!-- TAB 2: HISTORIQUE / MES ACTIVITÉS -->
+      <section v-if="currentTab === 'historique'" class="space-y-4">
+        
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 class="text-base font-bold text-white">Mes activités récentes</h2>
+            <p class="text-xs text-zinc-400">Historique des saisies et état de synchronisation.</p>
+          </div>
+
+          <div class="flex items-center gap-2 text-xs">
+            <input
+              v-model="historyFilterDay"
+              @change="loadHistory"
+              type="date"
+              class="bg-zinc-950 border border-zinc-800 px-3 py-1.5 rounded-xl text-zinc-200 outline-none cursor-pointer"
+            />
+            <button
+              v-if="historyFilterDay"
+              @click="historyFilterDay = ''; loadHistory()"
+              class="px-2.5 py-1.5 rounded-xl bg-zinc-800 text-zinc-300"
+            >
+              Tous
+            </button>
+          </div>
+        </div>
+
+        <div v-if="historyLoading" class="text-center py-10 text-xs text-zinc-500">
+          Chargement des activités...
+        </div>
+
+        <div v-else-if="historyActivities.length === 0" class="text-center py-12 rounded-2xl border border-zinc-800 bg-zinc-900/40 text-xs text-zinc-400">
+          Aucune activité enregistrée pour cette période.
+        </div>
+
+        <div v-else class="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-950 shadow-xl">
+          <table class="w-full text-xs text-left">
+            <thead class="text-zinc-400 bg-zinc-900/80 border-b border-zinc-800 sticky top-0">
+              <tr>
+                <th class="p-3">Date</th>
+                <th class="p-3">Ticket</th>
+                <th class="p-3">Flux</th>
+                <th class="p-3">Sujet</th>
+                <th class="p-3">Projet</th>
+                <th class="p-3">Durée</th>
+                <th class="p-3">Type</th>
+                <th class="p-3">Statut Sync</th>
+                <th class="p-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-800/60">
+              <tr v-for="act in historyActivities" :key="act.id" class="hover:bg-zinc-900/40">
+                <td class="p-3 font-mono text-zinc-300">{{ act.day }}</td>
+                <td class="p-3 font-mono">
+                  <a
+                    v-if="act.ticket"
+                    :href="act.devOpsUrl || '#'"
+                    target="_blank"
+                    class="text-blue-400 hover:underline"
+                  >
+                    {{ act.ticket }} ↪
+                  </a>
+                  <span v-else class="text-zinc-600">-</span>
+                </td>
+                <td class="p-3 font-mono text-amber-400">{{ act.flux || '-' }}</td>
+                <td class="p-3 text-zinc-200 max-w-xs truncate">{{ act.subject }}</td>
+                <td class="p-3 text-zinc-400">{{ act.project }}</td>
+                <td class="p-3 font-semibold text-emerald-400">
+                  {{ act.hours }}h <span class="text-zinc-500 font-normal">({{ act.days }}j)</span>
+                </td>
+                <td class="p-3 text-zinc-400">{{ act.type }}</td>
+                <td class="p-3">
+                  <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-950/60 text-emerald-300 border border-emerald-800">
+                    {{ act.syncLabel || '✓ Enregistrée' }}
+                  </span>
+                </td>
+                <td class="p-3 text-right">
+                  <button
+                    @click="deleteHistoryItem(act.id)"
+                    class="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded bg-zinc-900 border border-zinc-800"
+                  >
+                    Suppr
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </section>
+
+      <!-- TAB 3: DASHBOARD / BILAN PERSONNEL -->
+      <section v-if="currentTab === 'dashboard'" class="space-y-6">
+        
+        <div>
+          <h2 class="text-base font-bold text-white">Mon Bilan d'activité</h2>
+          <p class="text-xs text-zinc-400">Synthèse de temps et suivi des objectifs journaliers & hebdomadaires.</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          
+          <div class="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800 space-y-4 text-xs">
+            <h3 class="font-bold text-white">Répartition de la semaine</h3>
+            <div class="space-y-2">
+              <div class="flex justify-between text-zinc-400">
+                <span>Temps cumulé cette semaine :</span>
+                <span class="font-bold text-white">{{ summary?.week?.hours || 0 }} h ({{ summary?.week?.days || 0 }} j)</span>
+              </div>
+              <div class="flex justify-between text-zinc-400">
+                <span>Objectif hebdomadaire :</span>
+                <span class="font-mono text-zinc-300">35.0 h (5 jours)</span>
+              </div>
+              <div class="flex justify-between text-zinc-400">
+                <span>Progression :</span>
+                <span class="font-bold text-indigo-400">
+                  {{ Math.round(((summary?.week?.hours || 0) / 35) * 100) }}%
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800 space-y-4 text-xs">
+            <h3 class="font-bold text-white">Règles Métier & Échelons Excel</h3>
+            <div class="space-y-1.5 text-zinc-300">
+              <div>• Base contractuelle : <strong>1 jour = 7 heures</strong></div>
+              <div>• Échelons autorisés : <strong>0.125, 0.25, 0.5, 0.75, 0.875, 1.0 j</strong></div>
+              <div>• Mode actif : <span class="text-amber-400 font-bold">Mock / Simulation locale</span></div>
+              <div>• Onglet Excel cible : <strong>Mathieu</strong> (Tableau6245781824)</div>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+    </main>
+
   </div>
 </template>
