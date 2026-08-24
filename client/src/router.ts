@@ -30,45 +30,59 @@ const router = createRouter({
 const publicRoutes = ["/login", "/reset-password", "/sharepoint-poc"];
 const profileRoute = "/complete-profile";
 
-router.beforeEach(async (to) => {
-  const { data } = await supabase.auth.getSession();
-  const isAuthed = !!data?.session;
+function purgeAuthStorage() {
+  clearMeCache();
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("sb-") || k.includes("supabase") || k === "me_cache_v1") {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch {}
+}
 
-  if (!isAuthed && !publicRoutes.includes(to.path)) {
+router.beforeEach(async (to) => {
+  // Always allow public routes without auto-redirecting to /activities
+  if (publicRoutes.includes(to.path)) {
+    return true;
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const session = data?.session;
+  const isAuthed = !!session;
+
+  // Unauthenticated user -> redirect to /login
+  if (!isAuthed) {
     return "/login";
   }
 
-  if (isAuthed && to.path === "/login") {
-    return "/activities";
+  // Profile completion route
+  if (to.path === profileRoute) {
+    return true;
   }
 
-  if (isAuthed && !publicRoutes.includes(to.path)) {
-    if (to.path === profileRoute) return true;
+  try {
+    const me = await ensureMe();
+    const fullName = String(me?.full_name ?? "").trim();
+    const role = String(me?.role ?? "");
 
-    try {
-      const me = await ensureMe();
-      const fullName = String(me?.full_name ?? "").trim();
-      const role = String(me?.role ?? "");
-
-      // force completion profil
-      if (!fullName) {
-        return profileRoute;
-      }
-
-      // routes PM uniquement
-      if (to.path === "/pm" || to.path === "/pm-dashboard") {
-        if (role !== "pm") return "/activities";
-      }
-    } catch (err: any) {
-      // If 401 Unauthorized, token is expired: sign out cleanly before redirecting to login to avoid loop
-      if (err?.response?.status === 401) {
-        clearMeCache();
-        await supabase.auth.signOut();
-        return "/login";
-      }
-      // If network error (backend starting up or temporary glitch), allow staying on page instead of infinite redirect bounce
-      return true;
+    // Force profile completion if no name
+    if (!fullName) {
+      return profileRoute;
     }
+
+    // PM only routes
+    if (to.path === "/pm" || to.path === "/pm-dashboard") {
+      if (role !== "pm") return "/activities";
+    }
+  } catch (err: any) {
+    if (err?.response?.status === 401) {
+      purgeAuthStorage();
+      try { await supabase.auth.signOut(); } catch {}
+      return "/login?session_expired=1";
+    }
+    // On network glitch, stay on page
+    return true;
   }
 
   return true;
